@@ -9,7 +9,6 @@ from pathlib import Path
 from src.context import Context
 from src.data_extract.utils.common.bulk_cache import archive_available_at, ensure_zip, is_cached
 from src.data_store.schema import Table
-from src.utils.data_policy import publication_policy
 
 
 @dataclass(frozen=True)
@@ -31,4 +30,4 @@ def ensure_archive(context: Context, cache: Path, source: ArchiveSource, period:
     found = ensure_zip(context, path, url, label=f"{source.label} {period}", timeout=source.timeout)
     if found is None:
         return None
-    return found, archive_available_at(period, found, policy=publication_policy(context.config, source.table), downloaded=downloaded)
+    return found, archive_available_at(period, found, downloaded=downloaded)

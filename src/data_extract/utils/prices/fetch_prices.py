@@ -31,7 +31,7 @@ from src.data_extract.utils.prices.anchor_check import anchor_restated_keys
 from src.data_extract.utils.prices.fetch_dividends import _extract_dividends
 from src.data_extract.utils.prices.fetch_splits import _extract_splits
 from src.data_store.schema import Table, Tables
-from src.utils.data_policy import window_policy
+from src.utils.data_policy import overlap_column, window_policy
 from src.utils.string import yahoo_symbol
 from src.utils.window import Window
 
@@ -387,7 +387,8 @@ def _plan(context: Context, table: Table, keys: list[str]) -> tuple[SeriesWork, 
     # Split events share the dense price frontier, while retaining their own policy.
     stored = None
     if table == Tables.prices_splits:
-        stored = (context.store.key_stats(Tables.prices, "ticker", where={"ticker": keys}), context.store.max_date(Tables.prices))
+        column = overlap_column(context.config, Tables.prices)
+        stored = context.store.key_stats(Tables.prices, "ticker", column, where={"ticker": keys, column: policy.requested})
     request = SeriesRequest(keys, trading_calendar(context), until=until, stored=stored)
     return series_windows(context, table, request), Window(policy.requested.start, until)
 

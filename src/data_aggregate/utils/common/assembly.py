@@ -10,6 +10,7 @@ from omegaconf import OmegaConf
 
 from src.context import Context
 from src.data_aggregate.utils.common.parts import PART_BY_NAME
+from src.data_aggregate.utils.price.frames import load_trading_calendar
 from src.data_store.schema import Table, resolve
 from src.data_store.store import DataStore
 from src.utils.data_policy import window_policy
@@ -73,6 +74,7 @@ def read_receipts(context: Context, payload: str) -> dict[Table, Window]:
 
     # Each component must cover the complete requested assembly scope.
     written = {}
+    calendar = load_trading_calendar(context)
     for name, item in [(name, item) for record in records for name, item in record["parts"].items()]:
         if name not in PART_BY_NAME or not isinstance(item, dict) or set(item) != {"start", "end", "tickers"}:
             raise ValueError(f"{name}: malformed component write receipt")
@@ -86,7 +88,7 @@ def read_receipts(context: Context, payload: str) -> dict[Table, Window]:
         ):
             raise ValueError(f"{name}: component receipt does not cover the complete requested ticker scope")
         table = resolve(name)
-        policy = window_policy(context.config, table, context.run.as_of)
+        policy = window_policy(context.config, table, context.run.as_of, calendar)
         interval = Window(pd.Timestamp(item["start"]), pd.Timestamp(item["end"]))
         if policy is None or interval.intersection(policy.requested) != interval:
             raise ValueError(f"{name}: component receipt exceeds configured dates")

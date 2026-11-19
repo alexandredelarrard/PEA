@@ -24,11 +24,12 @@ from src.data_extract.utils.common.resume import (
     DONE_TABLE,
     KEY_ROWLESS,
     planner_bounds,
+    reference_values,
     stored_accessions,
 )
 from src.data_extract.utils.edgar_extract import edgar_index
 from src.data_store.schema import Table
-from src.utils.data_policy import window_policy
+from src.utils.data_policy import overlap_column, window_policy
 from src.utils.tickers_universe.universe import before_end
 from src.utils.window import resolve_window
 
@@ -126,14 +127,21 @@ def document_worklist(context: Context, table: Table, request: WorklistRequest) 
         done = stored_accessions(context, table, list(roster), request.done_scope, request.done_where)
     cold = _cold_keys(context, table, list(roster)) if request.fill_cold else frozenset()
     read_done = time.perf_counter()
+    column = overlap_column(context.config, table)
+    index_column = "accession" if column == "accession_number" else "filed" if column in table.date_type_cols else column
+    if index_column not in df_index:
+        raise ValueError(f"{table.name}: index has no completion reference for {column}")
     units: dict[str, pd.DataFrame] = {}
     counts: dict[str, int] = {}
     for ticker in roster:
         frames = [by_cik[c] for c in candidates[ticker] if c in by_cik]
         df_listed = resolve_registrant_entries(scopes[ticker], pd.concat(frames, ignore_index=True), forms) if frames else df_index.iloc[:0]
         df_listed = df_listed[before_end(pd.Series(ticker, index=df_listed.index), df_listed["filed"], bounds)]
-        done_here = done.get(ticker, set()) & set(df_listed["accession"].astype(str))
-        df_units = df_listed[~df_listed["accession"].isin(done_here)].reset_index(drop=True)
+        references = reference_values(df_listed[index_column], table, column)
+        done_here = done.get(ticker, set())
+        if request.done_accessions is not None:
+            done_here = set(references.loc[df_listed["accession"].isin(done_here)].dropna())
+        df_units = df_listed[~references.isin(done_here)].reset_index(drop=True)
         for name, n in _classify_units(df_listed, df_units).items():
             counts[name] = counts.get(name, 0) + n
         if not df_units.empty:

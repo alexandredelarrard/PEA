@@ -643,7 +643,8 @@ def test_configured_filing_bounds_reach_zip_packet_writes(tmp_path: Path, filing
     ]
     ctx = _ctx(tmp_path, filing_store, {"2026q3": filings})
     policy = ctx.config.data.tables.sec13f_hr
-    policy.start_date, policy.end_date = "2026-08-14", "2026-08-15"
+    policy.start_date = "2026-08-14"
+    ctx.run = WindowRun(ctx.run.mode, "bounded13F ZIP filing sample", pd.Timestamp("2026-08-15"))
     _ingest(ctx, full=True)
     markers = _markers(filing_store)
     assert set(markers.accession_number) == {filings[1][1], filings[2][1]}

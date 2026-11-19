@@ -27,7 +27,6 @@ from src.constants.constants import MARKET_TIMEZONE, SEC_NET_PENSION_LIABILITY_T
 from src.data_extract.utils.common import bulk_cache
 from src.data_extract.utils.common.resume import ArchiveWork
 from src.data_store.schema import Tables
-from src.utils.data_policy import publication_policy
 from src.utils.window import Window, WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_extract.common.scope_fixtures import SENTINEL, dated_identity
@@ -372,8 +371,7 @@ def test_notes_periods_falls_back_to_generator(monkeypatch):
     [("2021_08", date(2021, 9, 12)), ("2013q4", date(2014, 1, 21)), ("2025_08", date(2025, 9, 12)), ("2026_08", date(2026, 9, 12))],
 )
 def test_archive_release_clock_uses_monthly_day_or_quarterly_lag(period: str, expected: date, tmp_path: Path) -> None:
-    policy = publication_policy(extract_config(), Tables.notes_num)
-    assert bulk_cache.archive_available_at(period, tmp_path / f"{period}_notes.zip", policy=policy, downloaded=False) == expected
+    assert bulk_cache.archive_available_at(period, tmp_path / f"{period}_notes.zip", downloaded=False) == expected
     print(f"SANITY: raw {period} release clock is {expected}; final market-session eligibility is resolved by the shared publication policy.")
 
 
@@ -386,14 +384,12 @@ def test_future_archive_available_at_is_cached_download_date(tmp_path: Path) -> 
     assert bulk_cache.archive_available_at(
         "2026_09",
         path,
-        policy=publication_policy(extract_config(), Tables.notes_num),
         downloaded=False,
     ) == date(2026, 10, 15)
     assert (
         bulk_cache.archive_available_at(
             "2026_09",
             tmp_path / "missing.zip",
-            policy=publication_policy(extract_config(), Tables.notes_num),
             downloaded=False,
         )
         is None

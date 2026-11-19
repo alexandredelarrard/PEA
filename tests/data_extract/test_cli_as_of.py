@@ -11,9 +11,8 @@ from src.data_extract import cli as extraction_cli
 from src.utils.string import run_date
 
 
-
 def test_as_of_is_a_hidden_option_resolved_to_midnight() -> None:
-    for name in ("universe", "extraction-status"):
+    for name in ("universe", "price-history"):
         command = extraction_cli.cli.commands[name]
         options = {p.name: p for p in command.params if isinstance(p, click.Option)}
         assert "as_of" in options and options["as_of"].hidden, name

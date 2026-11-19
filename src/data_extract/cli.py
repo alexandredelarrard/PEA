@@ -7,7 +7,7 @@ fetcher. Fetchers resume from the DB, so a nightly rerun pulls only new data. `s
 """
 
 import json
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 
 import click
@@ -83,7 +83,6 @@ from src.data_extract.utils.prices.fetch_macro import fetch_macro
 from src.data_extract.utils.prices.fetch_prices import YahooSession, fetch_dividends, fetch_price_actions, fetch_prices
 from src.data_store.schema import Table, marker_tables, resolve
 from src.utils.cli_helper import SpecialHelpOrder
-from src.utils.freshness import PREDICTION_INPUTS, fresh_share, freshness_tables, last_dates_by_key, max_age_days, table_freshness
 from src.utils.window import Window
 
 
@@ -95,61 +94,6 @@ def cli() -> None:
 def _tickers(context: Context, tickers: str | None) -> list[str]:
     """The --tickers subset, checked against the universe, else the whole universe."""
     return context.universe.subset(tickers.split(",")) if tickers else context.universe.tickers
-
-
-def _table_status(context: Context, table: Table, universe: list[str], as_of: pd.Timestamp, min_share: float) -> dict[str, object]:
-    """One table's freshness: the table-wide age, and for a ticker table the per-key share of the universe.
-
-    RED when the age exceeds the cadence, or when a prediction input's share is below `min_share`."""
-    age_days = table_freshness(context, table, as_of)
-    max_age = max_age_days(context.config, table)
-    ok = age_days is not None and age_days <= max_age
-    share = None
-    if table.ticker_col is not None:
-        last_by_key = last_dates_by_key(context, table)
-        if table in PREDICTION_INPUTS or not set(universe).isdisjoint(last_by_key):
-            share = fresh_share(last_by_key, universe, as_of, max_age)
-    if table in PREDICTION_INPUTS:
-        ok = ok and share is not None and share >= min_share
-    return {
-        "date_column": str(context.config.data.tables[table.name].freshness.clock),
-        "cadence": str(context.config.data.tables[table.name].freshness.cadence),
-        "max_date": None if age_days is None else (as_of.date() - timedelta(days=age_days)).isoformat(),
-        "age_days": age_days,
-        "max_age_days": max_age,
-        "fresh_share": None if share is None else round(share, 4),
-        "ok": ok,
-    }
-
-
-def _extraction_status_report(context: Context) -> dict[str, object]:
-    """Freshness report over exactly the tables and cadences declared by the schema registry."""
-    as_of = context.run.as_of
-    universe = context.universe.tickers
-    min_share = float(context.config.data.freshness.prediction_min_fresh_share)
-    statuses = {table.name: _table_status(context, table, universe, as_of, min_share) for table in freshness_tables(context.config)}
-    behind = [name for name, status in statuses.items() if not status["ok"]]
-    for name in behind:
-        status = statuses[name]
-        context.log.warning(
-            "Extraction freshness RED: %s max_date=%s age_days=%s (max %s) fresh_share=%s",
-            name,
-            status["max_date"],
-            status["age_days"],
-            status["max_age_days"],
-            status["fresh_share"],
-        )
-    context.log.info("Extraction freshness report ok=%s behind=%s", not behind, behind)
-    return {"as_of": as_of.date().isoformat(), "ok": not behind, "behind": behind, "tables": statuses}
-
-
-@cli.command(name="extraction-status", help="Report every schema-declared extraction table's freshness (JSON); RED tables warn, the exit code is 0.")
-@click.option(*CONFIG_ARGS, **CONFIG_KWARGS)
-@click.option(*AS_OF_ARGS, **AS_OF_KWARGS)
-def extraction_status(config_path: str, as_of: datetime | None) -> None:
-    _, context = get_config_context(config_path, use_cache=False, save=False, as_of=as_of)
-    report = _extraction_status_report(context)
-    click.echo(json.dumps(report, sort_keys=True))
 
 
 # --- Universe (runs before every other command) ---

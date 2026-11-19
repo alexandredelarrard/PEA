@@ -37,7 +37,7 @@ from src.data_extract.utils.common.resume import archive_scopes, archive_worklis
 from src.data_extract.utils.common.sec_io import sec_get
 from src.data_extract.utils.zips.zip_archive import ArchiveSource, ensure_archive
 from src.data_store.schema import Table, Tables
-from src.utils.data_policy import publication_policy, window_policy
+from src.utils.data_policy import window_policy
 from src.utils.string import pad_cik_series
 from src.utils.window import Window
 
@@ -314,14 +314,13 @@ def _repair_stored_clocks(context: Context, cache: Path, tickers: list[str]) -> 
     """Repair configured source units while retaining every later recorded availability clock."""
     # Load the requested tickers' stored units before inferring any replacement metadata.
     periods = stored_values(context, _NOTES_TABLES, "period", where={"ticker": tickers})
-    policy = publication_policy(context.config, Tables.notes_num)
     windows = [item.requested for table in _NOTES_TABLES if (item := window_policy(context.config, table, context.run.as_of)) is not None]
 
     # A historical estimate cannot move a recorded source availability earlier.
     for period in sorted(periods):
         if not any(window.start <= pd.Timestamp(period_end(period)) <= window.end for window in windows):
             continue
-        inferred = archive_available_at(period, cache / f"{period}_notes.zip", policy=policy, downloaded=False)
+        inferred = archive_available_at(period, cache / f"{period}_notes.zip", downloaded=False)
         stored = stored_period_clock(context, _NOTES_TABLES, period)
         available_at = max((clock for clock in (stored, inferred) if clock is not None), default=None)
         if available_at is None:

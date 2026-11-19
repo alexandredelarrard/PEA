@@ -13,7 +13,7 @@ import types
 from collections import Counter
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
 import pyarrow as pa
@@ -22,7 +22,7 @@ import pytest
 
 from src.data_extract.utils.behavioral import fetch_earnings_call_transcripts as ect
 from src.data_extract.utils.common.identity import CikWindow, Identity, SymbolInterval, build_identity
-from src.data_store.schema import Resume, Tables
+from src.data_store.schema import Tables
 from src.utils.window import Window, WindowRun
 from tests.data_extract.fake_context import extract_config
 from tests.support.universe import as_roster, seed_universe, universe_in
@@ -1017,7 +1017,7 @@ def test_live_defeatbeta_smoke_two_tickers(tmp_path: Path, sqlite_store: Any) ->
 
     assert set(per_ticker.index) == {"AAPL", "MSFT"} and per_ticker.min() >= 40
     assert rows["quarter"].str.fullmatch(r"\d{4}Q[1-4]").all() and (first == 1).all()
-    assert pd.to_datetime(rows["as_of"]).min() >= pd.Timestamp(cast(str, cast(Resume, Tables.earnings_call_sections.resume).source_start))
+    assert pd.to_datetime(rows["as_of"]).min() >= pd.Timestamp(ctx.config.data.tables.earnings_call_sections.start_date)
     assert again.rows_written == 0
 
     print("\n=== SANITY CHECK: live defeatbeta smoke (test store) ===")
@@ -1068,8 +1068,8 @@ def test_full_call_reconcile_preserves_rows_outside_configured_start_and_end(tmp
     original = [_call("AAA", 2025, 4, "2025-12-01", 1, 2), _call("AAA", 2026, 1, "2026-03-01", 2, 2), _call("AAA", 2026, 3, "2026-09-01", 3, 2)]
     ect.extract_earnings_calls(context, tickers=["AAA"], source=_source(_write(tmp_path / "before.parquet", [original]), "before")[0])
     policy = context.config.data.tables[Tables.earnings_call_sections.name]
-    policy.start_date, policy.end_date = "2026-01-01", "2026-06-30"
-    context.run = WindowRun("full", "bounded call reconciliation", context.run.instant)
+    policy.start_date = "2026-01-01"
+    context.run = WindowRun("full", "bounded call reconciliation", pd.Timestamp("2026-06-30"))
     current = [_call("AAA", 2026, 2, "2026-04-01", 4, 2), _call("AAA", 2027, 1, "2027-03-01", 5, 2)]
     result = ect.extract_earnings_calls(context, tickers=["AAA"], source=_source(_write(tmp_path / "after.parquet", [current]), "after")[0])
     stored = _sections(sqlite_store)

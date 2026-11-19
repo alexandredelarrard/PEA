@@ -37,7 +37,7 @@ from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_extract.utils.common.resume import planner_bounds, source_plan
 from src.data_store.schema import Tables
 from src.data_store.store import DataStore, Where
-from src.utils.data_policy import window_policy
+from src.utils.data_policy import overlap_column, window_policy
 from src.utils.string import squash, yahoo_symbol
 from src.utils.text.earnings_call_split import company_in_introduction
 from src.utils.window import Window
@@ -404,7 +404,11 @@ def _ordered_parallel[T](groups: list[int], work: Callable[[int], T], workers: i
 def _call_windows(context: Context, scope: set[str]) -> dict[str, Window]:
     """Resolve each key's configured candidate check; a missing key uses its fixed initial scope."""
     # Load each scoped frontier once, then retain the universe's declared end/grace.
-    stats = context.store.key_stats(_TABLE, "ticker", "as_of", where={"ticker": sorted(scope)})
+    column = overlap_column(context.config, _TABLE)
+    policy = window_policy(context.config, _TABLE, context.run.as_of)
+    if policy is None:
+        return {}
+    stats = context.store.key_stats(_TABLE, "ticker", column, where={"ticker": sorted(scope), column: policy.requested})
     if context.run.mode == "incremental" and not stats.empty and stats["last"].isna().any():
         raise ValueError("Stored call clocks are unknown; use explicit bounded historical recovery")
     frontiers = dict(zip(stats["key"], pd.to_datetime(stats["last"]), strict=True)) if not stats.empty else {}

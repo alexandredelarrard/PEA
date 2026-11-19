@@ -197,7 +197,8 @@ def pit_shares_outstanding(def14a_hist: pd.DataFrame, prices: PriceFrames, tally
         if "insider_shares" in def14a_hist.columns:
             tally["⚠ economic ownership not computed: shares_outstanding_pit unsupported"] = 1
         return None
-    return lookup_asof(prices.shares_outstanding_pit, def14a_hist["ticker"], _proxy_dates(def14a_hist))
+    dates = pd.to_datetime(def14a_hist.get("_source_as_of", def14a_hist["as_of"]), errors="coerce")
+    return lookup_asof(prices.shares_outstanding_pit, def14a_hist["ticker"], dates)
 
 
 def _proxy_dates(df: pd.DataFrame) -> pd.Series:

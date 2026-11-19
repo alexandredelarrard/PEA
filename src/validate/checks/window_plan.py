@@ -1,4 +1,4 @@
-"""Independent configured-overlap checks for actual read-only cube planner traces."""
+"""Independent price-grid and calendar-input checks for actual cube planner traces."""
 
 from __future__ import annotations
 
@@ -11,25 +11,20 @@ from src.data_store.schema import Tables
 from src.validate.result import CheckResult, Finding
 
 
-def _move(anchor: pd.Timestamp, offset: dict[str, Any], sessions: pd.DatetimeIndex, direction: int = -1) -> pd.Timestamp:
-    amount = int(offset["value"])
-    if offset["unit"] == "calendar_days":
-        return anchor + pd.Timedelta(days=direction * amount)
-    if offset["unit"] != "trading_sessions":
-        raise ValueError("Cube plan oracle requires declared calendar-day or trading-session units")
-    if not amount:
-        return anchor
-    prior = [day for day in sessions if day < anchor] if direction < 0 else [day for day in sessions if day <= anchor]
-    position = len(prior) if direction < 0 else len(prior) - 1
-    return sessions[max(0, min(len(sessions) - 1, position + direction * amount))]
+def _subtract_days(anchor: pd.Timestamp, days: object) -> pd.Timestamp:
+    if isinstance(days, bool) or not isinstance(days, int) or days < 0:
+        raise ValueError("Calendar history must be a nonnegative integer")
+    return anchor - pd.Timedelta(days=days)
 
 
 def check_window_plans(context: Context, replay: dict[str, Any]) -> dict[str, CheckResult]:
     """Compare real planner footprints to raw configuration; never call Window arithmetic."""
     sessions = pd.DatetimeIndex(pd.to_datetime(replay["sessions"]))
     trace = replay.get("planning")
-    if trace is None:
-        return {Tables.cube.name: CheckResult.abstained("window_plan", Tables.cube.name, "No actual production planner trace")}
+    if trace is None or sessions.empty:
+        return {Tables.cube.name: CheckResult.abstained("window_plan", Tables.cube.name, "No actual planner trace or observed price dates")}
+    if sessions.hasnans or sessions.has_duplicates or not sessions.is_monotonic_increasing:
+        raise ValueError("Planner evidence needs ordered unique observed price dates")
     results = {}
     for name, plan in trace["parts"].items():
         results[name] = _check_part(context, name, plan, trace, sessions)
@@ -38,32 +33,28 @@ def check_window_plans(context: Context, replay: dict[str, Any]) -> dict[str, Ch
         results[Tables.cube.name] = CheckResult.abstained("window_plan", Tables.cube.name, "Actual assembly planner returned no window")
         return results
     selected = trace["selected_components"]
-    start = max(
-        pd.Timestamp(context.config.data.tables[Tables.cube.name].start_date),
-        min(pd.Timestamp(trace["parts"][name]["write"]["start"]) for name in selected),
-    )
+    end = min(pd.Timestamp(trace["as_of"]), sessions[-1])
+    start = sessions[0]
     if plan["mode"] == "incremental":
-        catchup = pd.Timestamp(plan["frontier"]) if plan["frontier"] is not None else pd.Timestamp(plan["requested"]["start"])
-        start = max(pd.Timestamp(plan["requested"]["start"]), min(start, catchup, pd.Timestamp(plan["requested"]["end"])))
-    else:
-        start = pd.Timestamp(plan["requested"]["start"])
+        component_start = min(pd.Timestamp(trace["parts"][name]["write"]["start"]) for name in selected)
+        catchup = pd.Timestamp(plan["frontier"]) if plan["frontier"] is not None else sessions[0]
+        start = max(sessions[0], min(component_start, catchup, end))
     findings = []
     if pd.Timestamp(plan["write"]["start"]) != start:
         findings.append(
             Finding.at(
                 8,
                 "Assembly did not inherit actual selected component dates and catch-up",
-                "Compare resolved CD/S dates rather than raw offset numbers",
+                "Observed price dates, selected component writes and scoped catch-up",
                 expected_start=start,
                 actual=plan["write"]["start"],
             )
         )
-    item = context.config.data.tables[Tables.cube.name]
-    end = min(pd.Timestamp(trace["as_of"]), sessions[-1], pd.Timestamp(item.end_date) if item.end_date is not None else sessions[-1])
+    budget = context.config.data.tables[Tables.cube.name].warmup[Tables.cube_part_prices.name]
     expected = {
-        "requested": {"start": pd.Timestamp(item.start_date), "end": end},
+        "requested": {"start": sessions[0], "end": end},
         "write": {"start": start, "end": end},
-        "read": {"start": start, "end": end},
+        "read": {"start": sessions[0] if budget is None else _subtract_days(start, budget), "end": end},
     }
     for section, bounds in expected.items():
         if any(pd.Timestamp(plan[section][side]) != day for side, day in bounds.items()):
@@ -78,6 +69,9 @@ def check_window_plans(context: Context, replay: dict[str, Any]) -> dict[str, Ch
             )
     if set(plan["keys"].get("ticker", [])) != set(trace["tickers"]):
         findings.append(Finding.at(8, "Assembly planner changed the pinned ticker scope", "Exact five-key scope"))
+    configured = context.config.data_aggregate.assembly
+    if set(context.config.data.tables[Tables.cube.name].warmup) != set([*configured.compulsory_parts, *configured.optional_parts]):
+        findings.append(Finding.at(8, "Assembly input map differs from its configured selected components", "Every selected dependency is explicit"))
     results[Tables.cube.name] = CheckResult.measured(
         "window_plan",
         Tables.cube.name,
@@ -93,25 +87,17 @@ def _check_part(context: Context, name: str, plan: dict[str, Any], trace: dict[s
     if "reason" in plan:
         return CheckResult.abstained("window_plan", name, plan["reason"])
     item = context.config.data.tables[name]
-    requested_start = max(
-        pd.Timestamp(item.start_date), pd.Timestamp(item.source_start) if item.source_start is not None else pd.Timestamp(item.start_date)
-    )
-    requested_end = min(pd.Timestamp(trace["as_of"]), sessions[-1], pd.Timestamp(item.end_date) if item.end_date is not None else sessions[-1])
+    requested_start, requested_end = sessions[0], min(pd.Timestamp(trace["as_of"]), sessions[-1])
     start = requested_start
     if plan["mode"] == "incremental":
         frontier = min(pd.Timestamp(plan["frontier"]), requested_end)
-        start = max(start, _move(frontier, dict(item.reprocess.overlap), sessions))
-    grid = item.warmup.grid
-    read_start = sessions[0] if grid.mode == "full_history" else min(start, _move(start, {"value": grid.value, "unit": grid.unit}, sessions))
+        start = max(start, _subtract_days(frontier, item.overlap.days))
+    source = Tables.prices if name == Tables.cube_part_prices.name else Tables.cube_part_prices
+    if source.name not in item.warmup:
+        raise ValueError(f"{name}: missing input history for {source.name}")
+    budget = item.warmup[source.name]
+    read_start = sessions[0] if budget is None else _subtract_days(start, budget)
     read_end = requested_end
-    if "lookahead" in item:
-        read_end = min(
-            pd.Timestamp(trace["as_of"]),
-            max(
-                requested_end,
-                _move(requested_end, {"value": max(context.config.data_aggregate.targets.horizons), "unit": "trading_sessions"}, sessions, 1),
-            ),
-        )
     expected = {
         "requested": {"start": requested_start, "end": requested_end},
         "write": {"start": start, "end": requested_end},
@@ -124,7 +110,7 @@ def _check_part(context: Context, name: str, plan: dict[str, Any], trace: dict[s
                 Finding.at(
                     8,
                     f"Actual {section} differs from configured dates/context",
-                    "Independent inclusive CD/S planning oracle",
+                    "Observed prices, calendar overlap and rewrite-anchored input history",
                     expected_bounds=bounds,
                     actual=plan[section],
                 )
@@ -136,6 +122,6 @@ def _check_part(context: Context, name: str, plan: dict[str, Any], trace: dict[s
         name,
         findings,
         scope={"tickers": trace["tickers"], "role": "forward outcome labels" if name == Tables.cube_part_targets.name else "feature part"},
-        metrics={"actual": plan, "expected": expected},
+        metrics={"actual": plan, "expected": expected, "price_input": source.name, "additional_calendar_days": budget},
         reason="Actual production plan and scoped frontier; no cube rebuild or production write.",
     )

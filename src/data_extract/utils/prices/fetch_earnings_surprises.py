@@ -18,6 +18,7 @@ from src.context import Context
 from src.data_extract.utils.common.rate_limit import call_with_retries
 from src.data_extract.utils.common.resume import bounded_span, planner_bounds, source_plan
 from src.data_store.schema import Tables
+from src.utils.data_policy import overlap_column, window_policy
 from src.utils.window import Window
 
 _RENAME = {
@@ -79,7 +80,11 @@ def _download_one(ticker: str, window: Window) -> pd.DataFrame | None:
 def fetch_earnings_surprises(context: Context, tickers: list[str]) -> None:
     """Recheck configured publication candidates; cold/full keys read their fixed history."""
     # Load scoped resume observations before preparing candidate work.
-    df_stats = context.store.key_stats(Tables.earnings_surprises, "ticker", where={"ticker": tickers})
+    column = overlap_column(context.config, Tables.earnings_surprises)
+    policy = window_policy(context.config, Tables.earnings_surprises, context.run.as_of)
+    if policy is None:
+        return
+    df_stats = context.store.key_stats(Tables.earnings_surprises, "ticker", column, where={"ticker": tickers, column: policy.requested})
     frontier = dict(zip(df_stats["key"], df_stats["last"], strict=True))
     bounds, symbols = planner_bounds(context), context.universe.trading_symbols
     work: list[tuple[str, Window]] = []

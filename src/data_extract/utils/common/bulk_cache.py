@@ -17,13 +17,12 @@ from pathlib import Path
 from typing import Literal
 
 import pandas as pd
-from omegaconf import DictConfig
 
 from src.constants.constants import MARKET_TIMEZONE
 from src.context import Context
 from src.data_extract.utils.common.sec_io import TransientReadError, download
 from src.data_store.schema import Table, name_of
-from src.utils.publication import archive_release_date, period_end
+from src.utils.publication import period_end
 from src.utils.window import Window
 
 __all__ = [
@@ -205,10 +204,12 @@ def cached_periods(cache: Path, *, prefix: str = "", suffix: str = ".zip") -> se
     return {path.name[len(prefix) : -len(suffix)] for path in cache.glob(f"{prefix}*{suffix}") if is_cached(path)}
 
 
-def archive_available_at(period: str, path: Path, *, policy: DictConfig, downloaded: bool) -> date | None:
-    """Configured release estimate for older archives; otherwise preserve observed download/file dates."""
-    if period_end(period) < date.fromisoformat(str(policy.observed_from)):
-        return archive_release_date(policy, period).date()
+def archive_available_at(period: str, path: Path, *, downloaded: bool) -> date | None:
+    """Preserve historical raw archive metadata; PIT eligibility is resolved independently."""
+    end = pd.Timestamp(period_end(period))
+    # Recording began in September 2026; older raw metadata retains its original estimates.
+    if end.date() < date(2026, 9, 1):
+        return (end + pd.offsets.MonthBegin(1) + pd.Timedelta(days=11)).date() if "_" in period else (end + pd.Timedelta(days=21)).date()
     if downloaded:
         return datetime.now(MARKET_TIMEZONE).date()
     try:

@@ -695,8 +695,8 @@ def test_finite_recovery_window_preserves_history_prefix_suffix_and_other_ticker
     changed.loc[changed.field.eq("totalAssets"), "value"] += 1000
     sqlite_store.save(Tables.sec_fundamentals_facts, changed)
     policy = context.config.data.tables.sec_fundamentals_history
-    policy.start_date, policy.end_date = "2023-08-01", "2023-11-01"
-    context.run = WindowRun("full", "explicit bounded history recovery", context.run.instant)
+    policy.start_date = "2023-08-01"
+    context.run = WindowRun("full", "explicit bounded history recovery", pd.Timestamp("2023-11-01"))
     mod.build_fundamentals_history(context, ["TST"])
     after = sqlite_store.load(Tables.sec_fundamentals_history).sort_values(["ticker", "as_of"]).reset_index(drop=True)
     protected = before.ticker.eq("OTH") | ~pd.to_datetime(before.as_of).between("2023-08-01", "2023-11-01")

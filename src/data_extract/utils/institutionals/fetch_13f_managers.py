@@ -3,7 +3,7 @@ fetch_13f_managers.py (src/data_extract/utils/institutionals/fetch_13f_managers.
 ------------------------------------------------------------------------------------
 The `sec_13f_manager_details` extract: one row per (cik, period) of every 13F filer since 1999-06-30, from the cached 13F
 data-set covers (name, state, file number, report type) and, where no cover exists, from `sec13f_hr` marker rows named by
-the cached EDGAR master index. The shared Window resolves the configured filing tail and a named bounded recovery for missing cover evidence in configured cached units.
+the cached EDGAR master index. The shared Window resolves the configured filing tail.
 Only overlapping archives are opened. Rows are
 diffed against the stored ones and only differences are saved, extract columns only. No SEC request is made.
 """
@@ -31,45 +31,24 @@ from src.data_extract.utils.institutionals.manager_rows import (
 )
 from src.data_extract.utils.zips.thirteen_f_datasets import DataSet, cached_data_sets, thirteen_f_cache
 from src.data_store.schema import EMPTY_MARKER, Resume, Tables
-from src.utils.data_policy import window_policy
-from src.utils.window import Window, WindowPlan, WindowPolicy, WindowRun, resolve_window
+from src.utils.data_policy import overlap_column, window_policy
+from src.utils.window import Window, WindowPlan
 
 logger = logging.getLogger(__name__)
 
 
 def _manager_window(context: Context, data_sets: list[DataSet]) -> WindowPlan | None:
-    """Resolve the configured tail and explicit missing-cover recovery without capping the tail at an archive."""
+    """Resolve the configured tail without deriving a hidden recovery from cached archives."""
     table = Tables.sec_13f_manager_details
     policy = window_policy(context.config, table, context.run.as_of)
     if policy is None:
         return None
 
-    # Load the in-scope frontier, and only pending cover clocks in the configured cached-unit recovery.
-    frontier = context.store.max_date(table, "first_filed_date", where={"first_filed_date": policy.requested})
-    units = [unit for unit in data_sets if unit.end >= policy.requested.start and unit.start <= policy.requested.end]
-    count = int(context.config.data.tables[table.name].reprocess.cover_recovery.cached_units)
-    anchor = max(policy.requested.start, units[-min(count, len(units))].start) if units else None
-    df_pending = None
-    if frontier is not None and anchor is not None and context.run.mode == "incremental":
-        df_pending = context.store.load(
-            table,
-            columns=["first_filed_date"],
-            where={"source": INDEX_SOURCE, "first_filed_date": Window(anchor, policy.requested.end)},
-            optional=True,
-        )
-
-    # Normal overlap is resolved once. Missing covers may select the explicitly configured recovery scope.
+    # Load the in-scope frontier before resolving normal work; older sparse gaps require explicit recovery.
+    column = overlap_column(context.config, table)
+    frontier = context.store.max_date(table, column, where={column: policy.requested})
     scope = (("source", tuple([INDEX_SOURCE, *(unit.filename for unit in data_sets)])),)
-    plan = source_plan(context, table, frontier, scope)
-    if plan is None or df_pending is None or df_pending.empty:
-        return plan
-    first_pending = pd.to_datetime(df_pending["first_filed_date"]).min()
-    if pd.isna(first_pending) or first_pending >= plan.write.start:
-        return plan
-    recovery = Window(first_pending, policy.requested.end)
-    run = WindowRun("recovery", "configured pending 13F manager cover evidence", context.run.instant)
-    context.log.info("13F manager cover recovery: requested %s, effective %s, cached units %d", policy.requested, recovery, count)
-    return resolve_window(WindowPolicy(recovery), run, frontier, pd.DatetimeIndex([]), scope)
+    return source_plan(context, table, frontier, scope)
 
 
 def _read_zip_tables(cache: Path, data_sets: list[DataSet], window: Window) -> list[tuple[str, pd.DataFrame, pd.DataFrame]]:
@@ -144,8 +123,7 @@ def fetch_manager_details(context: Context) -> int:
         return 0
 
     # merge: filings to one row per (cik, period), ZIP evidence first
-    floor = pd.Timestamp(context.config.data.tables[Tables.sec_13f_manager_details.name].coverage_start)
-    df_rows = candidate_rows(df_filings, floor, window.end)
+    df_rows = candidate_rows(df_filings, window.end)
     df_rows = df_rows[df_rows["first_filed_date"].between(window.start, window.end)]
     if df_rows.empty:
         return 0

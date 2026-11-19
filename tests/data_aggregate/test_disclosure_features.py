@@ -12,7 +12,7 @@ from src.data_aggregate.utils.fundamentals.disclosure_features import disclosure
 from src.data_aggregate.utils.fundamentals.earnings_features import reported_events
 from src.data_store.schema import Tables
 from src.utils.config import read_config
-from src.utils.publication import publication_rows
+from src.utils.publication import point_in_time
 from src.utils.tickers_universe.universe import Universe
 from tests.conftest import _store
 from tests.support.config import fixture_config
@@ -23,7 +23,7 @@ def test_disclosure_reaction_compounds_separately_and_waits_for_window() -> None
     events = pd.DataFrame({"ticker": ["AAA"], "earnings_date": [idx[1]], "eps_actual": [0.0]})
     own = pd.DataFrame({"AAA": 0.1}, index=idx)
     peers = pd.DataFrame({"AAA": 0.02}, index=idx)
-    fields = disclosure_return_fields(publication_rows(fixture_config(), Tables.earnings_surprises, events, own.index, "as_of"), own, peers)
+    fields = disclosure_return_fields(point_in_time(events, fixture_config(), Tables.earnings_surprises, own.index), own, peers)
     reaction = fields["earnings_abret_3d"]["AAA"]
     since = fields["earnings_abret_since_report"]["AAA"]
     assert reaction.iloc[:4].isna().all()
@@ -41,12 +41,12 @@ def test_disclosure_new_event_resets_and_missing_returns_are_not_zero() -> None:
     own = pd.DataFrame({"AAA": 0.1}, index=idx)
     peers = pd.DataFrame({"AAA": 0.02}, index=idx)
     peers.loc[idx[9], "AAA"] = np.nan
-    fields = disclosure_return_fields(publication_rows(fixture_config(), Tables.earnings_surprises, events, own.index, "as_of"), own, peers)
+    fields = disclosure_return_fields(point_in_time(events, fixture_config(), Tables.earnings_surprises, own.index), own, peers)
     assert fields["earnings_abret_3d"].loc[idx[8] :, "AAA"].isna().all()
     assert fields["earnings_abret_since_report"].loc[idx[9] :, "AAA"].isna().all()
     assert np.isclose(fields["earnings_abret_since_report"].loc[idx[8], "AAA"], 0.08)
     prefix = disclosure_return_fields(
-        publication_rows(fixture_config(), Tables.earnings_surprises, events.iloc[:1], own.index, "as_of"), own.iloc[:7], peers.iloc[:7]
+        point_in_time(events.iloc[:1], fixture_config(), Tables.earnings_surprises, own.index), own.iloc[:7], peers.iloc[:7]
     )
     for name in fields:
         pd.testing.assert_frame_equal(fields[name].iloc[:7], prefix[name])
@@ -96,9 +96,9 @@ def test_disclosure_reactions_real_returns_and_coverage() -> None:
     prices["date"] = pd.to_datetime(prices.date)
     own = prices.pivot(index="date", columns="ticker", values="ret").sort_index()
     peer = prices.pivot(index="date", columns="ticker", values="sector_ret").sort_index()
-    fields = disclosure_return_fields(publication_rows(fixture_config(), Tables.earnings_surprises, earnings, own.index, "as_of"), own, peer)
+    fields = disclosure_return_fields(point_in_time(earnings, fixture_config(), Tables.earnings_surprises, own.index), own, peer)
     assert fields["earnings_abret_3d"].notna().any().any()
-    observations = reported_events(publication_rows(fixture_config(), Tables.earnings_surprises, earnings, own.index, "as_of"), own.index)
+    observations = reported_events(point_in_time(earnings, fixture_config(), Tables.earnings_surprises, own.index), own.index)
     checked = 0
     for event in observations.loc[observations.ticker == "MSFT"].itertuples():
         pos = own.index.get_loc(event.as_of)

@@ -24,14 +24,14 @@ from src.data_aggregate.transformers.step_cube_fundamentals import StepCubeFunda
 from src.data_aggregate.transformers.step_cube_governance import StepCubeGovernance
 from src.data_aggregate.utils.common.assembly import part_has_rows
 from src.data_aggregate.utils.common.incremental import plan_window, write_part
-from src.data_aggregate.utils.common.inputs import load_source
+from src.data_aggregate.utils.common.inputs import load_source, source_read_scope
 from src.data_aggregate.utils.common.parts import CUBE_PARTS
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
 from src.data_aggregate.utils.fundamentals.dividend_features import _ttm_dividends
 from src.data_aggregate.utils.fundamentals.earnings_features import _report_state_to_daily, reported_events
-from src.data_aggregate.utils.fundamentals.fundamental_features import _FACT_COLS, _FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, _notes_num_daily
+from src.data_aggregate.utils.fundamentals.fundamental_features import _FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, _notes_num_daily, load_notes_num_scoped
 from src.data_aggregate.utils.institutionals.inputs import FTD_LINE_COLUMNS, LINEAGE_COLUMNS
-from src.data_aggregate.utils.institutionals.short_flow_features import _ftd_available_dates, _pivot, _publish_ftd_zip_states, _publish_shortvol
+from src.data_aggregate.utils.institutionals.short_flow_features import _pivot, _publish_ftd_zip_states, _publish_shortvol
 from src.data_aggregate.utils.price.frames import load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen.holdings_clean import clean_filings, tag_company_lines
 from src.data_aggregate.utils.sec_thirteen.inputs import _filing_layout, _iter_whole_quarters, _partition_packet
@@ -48,10 +48,9 @@ from src.data_aggregate.utils.text.earnings_call_features import (
 )
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore, KeySample
-from src.utils.data_policy import publication_policy, source_read_window
 from src.utils.institutional_vintages import prepare_book_vintages, resolve_prepared_books
 from src.utils.price.adjustments import load_bugfix
-from src.utils.publication import publication_dates, publication_rows, roll_to_session
+from src.utils.publication import point_in_time
 from src.utils.security_series import LINE_COLUMNS, SHORT_LINE_COLUMNS, fails_series, finra_key, load_fails_basis, prepare_master, short_volume_series
 from src.utils.window import Window, WindowPlan, WindowRun
 from src.validate.checks.window_lineage import _State, check_window_lineage, route_family
@@ -59,7 +58,7 @@ from src.validate.checks.window_plan import check_window_plans
 from src.validate.checks.window_sample import timing_sample_tables
 from src.validate.result import CheckResult, jsonable
 from tests.support.window_lineage_sources import employees, insiders, ownership, ownership_identity, votes
-from tests.support.window_samples import WindowSamples
+from tests.support.window_samples import WindowSamples, cube_input_windows
 
 
 class _MissingEvidenceError(ValueError):
@@ -115,7 +114,8 @@ def _tickers(manifest: dict[str, Any], table: Table, count: int) -> list[str]:
 
 
 def _financial(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
-    rows = StepCubeFundamentals(context, context.config)._load_fundamentals(tuple(context.universe.tickers), sessions)
+    windows = cube_input_windows(context, Tables.cube_part_fundamentals, sessions)
+    rows = StepCubeFundamentals(context, context.config)._load_fundamentals(tuple(context.universe.tickers), sessions, windows)
     states = []
     for field in ["netIncome", *[name for name in rows if name.startswith("sec_") and rows[name].notna().any()]]:
         if field not in rows:
@@ -128,10 +128,11 @@ def _financial(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
 
 def _governance(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
     table = Tables.def14a_llm
-    raw = StepCubeGovernance(context, context.config)._load_def14a(source_read_window(context.config, table, context.run.as_of))
+    windows = cube_input_windows(context, Tables.cube_part_governance, sessions)
+    raw = StepCubeGovernance(context, context.config)._load_def14a(windows[table])
     if raw is None:
         raise _MissingEvidenceError("No qualifying proxy parent observations")
-    rows = publication_rows(context.config, table, raw, sessions, "as_of")
+    rows = point_in_time(raw, context.config, table, sessions)
     field = "board_size"
     if field not in rows:
         raise _MissingEvidenceError("Proxy source lacks board_size")
@@ -149,10 +150,11 @@ def _governance(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
 
 def _earnings(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
     table = Tables.earnings_surprises
-    raw = load_source(context, table, columns=["ticker", "earnings_date", "eps_actual", "eps_estimate", "surprise_pct"])
+    windows = cube_input_windows(context, Tables.cube_part_fundamentals, sessions)
+    raw = load_source(context, table, columns=["ticker", "earnings_date", "eps_actual", "eps_estimate", "surprise_pct"], window=windows[table])
     if raw is None:
         raise _MissingEvidenceError("No earnings history")
-    ready = publication_rows(context.config, table, raw, sessions, "as_of")
+    ready = point_in_time(raw, context.config, table, sessions)
     rows = reported_events(ready, sessions)
     field = "eps_actual"
     daily = _report_state_to_daily(rows, [field], sessions)[field]
@@ -161,17 +163,13 @@ def _earnings(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
 
 def _notes(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
     table = Tables.notes_num
-    retained = source_read_window(context.config, table, context.run.as_of)
-    if retained is None:
-        raise _MissingEvidenceError("No configured notes source interval")
-    raw = context.store.load(table, columns=_FACT_COLS, where={"ticker": context.universe.tickers, "filed": retained}, optional=True)
-    if raw is None:
+    windows = cube_input_windows(context, Tables.cube_part_fundamentals, sessions)
+    prepared = load_notes_num_scoped(context, sessions, tickers=tuple(context.universe.tickers), window=windows[table])
+    if prepared is None:
         raise _MissingEvidenceError("No actual notes filing units for the pinned tickers")
-    prepared = publication_rows(context.config, table, raw, sessions, "available_at")
     states = []
     for tag in (_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS):
         rows = prepared.copy()
-        rows["as_of"] = pd.concat([pd.to_datetime(rows.filed), pd.to_datetime(rows.available_at)], axis=1).max(axis=1)
         rows = rows.sort_values(["ticker", "as_of", "ddate", "filed", "adsh"])
         rows[str(tag)] = rows["value"].where(rows.tag.eq(tag) & pd.to_numeric(rows.qtrs, errors="coerce").fillna(0).eq(0))
         daily = _notes_num_daily(prepared, str(tag), sessions)
@@ -181,8 +179,11 @@ def _notes(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
 
 def _calls(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
     table = Tables.earnings_call_sentiment
-    raw = load_source(context, table, columns=SENTIMENT_COLUMNS)
-    source = load_source(context, Tables.earnings_call_sections, columns=["ticker", "quarter", "paragraph", "as_of"])
+    windows = cube_input_windows(context, Tables.cube_part_text, sessions)
+    raw = load_source(context, table, columns=SENTIMENT_COLUMNS, window=windows[table])
+    source = load_source(
+        context, Tables.earnings_call_sections, columns=["ticker", "quarter", "paragraph", "as_of"], window=windows[Tables.earnings_call_sections]
+    )
     if raw is None or source is None:
         raise _MissingEvidenceError("Missing saved sentiment or its source call dates; inference is prohibited")
     source = source[["ticker", "quarter", "as_of"]].drop_duplicates()
@@ -191,16 +192,19 @@ def _calls(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
     valid = canonical_sentiment_rows(valid_sentiment_rows(raw, model))
     complete = completed_sentiment_calls(valid)
     valid = valid.loc[pd.MultiIndex.from_frame(valid[["ticker", "quarter"]]).isin(complete)]
-    rows = sentiment_kpis(valid).merge(source, on=["ticker", "quarter", "as_of"], validate="one_to_one")
+    prepared = point_in_time(valid, context.config, table, sessions)
+    calls = point_in_time(source, context.config, Tables.earnings_call_sections, sessions)
+    clocks = prepared.groupby(["ticker", "quarter"], as_index=False)["_source_as_of"].first()
+    rows = sentiment_kpis(prepared).merge(clocks, on=["ticker", "quarter"], validate="one_to_one")
+    calls = calls.rename(columns={"_source_as_of": "_source_call_as_of", "as_of": "_projection_parent_asof"})
+    rows = rows.merge(calls[["ticker", "quarter", "_source_call_as_of", "_projection_parent_asof"]], on=["ticker", "quarter"], validate="one_to_one")
+    rows = rows.loc[pd.to_datetime(rows._source_as_of).eq(pd.to_datetime(rows._source_call_as_of))].copy()
+    rows["as_of"] = rows[["as_of", "_projection_parent_asof"]].max(axis=1)
     units = {key: group[[*table.pk, "as_of", "model"]].to_dict("records") for key, group in valid.groupby(["ticker", "quarter", "as_of"])}
-    rows["_source_units"] = [units[(row.ticker, row.quarter, row.as_of)] for row in rows.itertuples()]
-    rows["_source_as_of"] = rows.as_of
-    policy = publication_policy(context.config, table)
-    lag = int(policy.lag.value)
+    rows["_source_units"] = [units[(row["ticker"], row["quarter"], row["_source_as_of"])] for row in rows.to_dict("records")]
     lifetime = int(context.config.data_aggregate.earnings_calls.signal_sessions)
     field = "ec_prep_tone"
-    daily = _daily_frame(rows, field, sessions, lag, lifetime)
-    rows = publication_rows(context.config, table, rows.drop(columns="_source_as_of"), sessions, "as_of")
+    daily = _daily_frame(rows, field, sessions, lifetime)
     return [_State(table, Tables.cube_part_text, rows, field, daily, lifetime_sessions=lifetime)]
 
 
@@ -210,25 +214,24 @@ def _security_rows(
     """Complete relevant security lines plus genuine source rows witnessing served days."""
     # Keep the complete configured scoped history, including the prior ZIP/state
     # carried into the first asserted2026 boundary.
-    interval = source_read_window(context.config, table, context.run.as_of)
-    if interval is None:
-        raise _MissingEvidenceError("No configured security-source interval")
+    interval = cube_input_windows(context, Tables.cube_part_institutionals, sessions)[table]
+    payload_scope = source_read_scope(context, table, interval)
     target = master.loc[master.canonical_company.isin(context.universe.tickers)]
     if target.empty:
         raise _MissingEvidenceError("Missing complete dated security identity units for pinned output tickers")
     if table == Tables.sec_fails_to_deliver_security:
-        selected = {"cusip": sorted(target.cusip.dropna().unique()), "date": interval}
+        selected = {"cusip": sorted(target.cusip.dropna().unique()), **payload_scope.get("where", {})}
     else:
         identity_symbols = lineage.loc[lineage.canonical_ticker.isin(context.universe.tickers), "symbol"]
         wanted = set(target.source_symbol.dropna().map(finra_key)) | set(identity_symbols.dropna().map(finra_key))
-        symbols = context.store.distinct(table, "source_symbol", where={"date": interval})
-        selected = {"source_symbol": [symbol for symbol in symbols if finra_key(symbol) in wanted], "date": interval}
+        symbols = context.store.distinct(table, "source_symbol", where={} if interval is None else {"date": interval})
+        selected = {"source_symbol": [symbol for symbol in symbols if finra_key(symbol) in wanted]}
     metadata_interval = _short_metadata_window(context, sessions, interval) if table == Tables.sec_short_volume_security else interval
-    metadata_scope: dict[str, Any] = {"date": metadata_interval}
+    metadata_scope: dict[str, Any] = {"date": metadata_interval} if table == Tables.sec_short_volume_security else {}
     if table == Tables.sec_fails_to_deliver_security:
         metadata_scope["period"] = sorted(_ftd_metadata_periods(context, sessions, interval))
     global_days = set(context.store.distinct(table, "date", where=metadata_scope))
-    own_metadata_scope = {**selected, **({"period": metadata_scope["period"]} if "period" in metadata_scope else {})}
+    own_metadata_scope = {**selected, **metadata_scope}
     own_days = set(context.store.distinct(table, "date", where=own_metadata_scope))
     missing = sorted(global_days - own_days)
     # Never request calendar-day-count groups: nonserved weekends would make the
@@ -244,12 +247,13 @@ def _security_rows(
         else pd.DataFrame(columns=list(table.pk))
     )
     keys = witnesses[list(table.pk)].to_dict("records")
-    chunks = list(context.store.iter_load(table, columns=columns, where=[selected, *keys]))
+    payload_scope.pop("where", None)
+    chunks = list(context.store.iter_load(table, columns=columns, where=[selected, *keys], **payload_scope))
     if not chunks:
         raise _MissingEvidenceError("No security-source payload in the bounded complete-unit scope")
     result = pd.concat(chunks, ignore_index=True).drop_duplicates(list(table.pk))
     result.attrs["lineage_dependency_scope"] = {
-        "economic_history": {"start": interval.start, "end": interval.end},
+        "economic_history": {"start": None if interval is None else interval.start, "end": context.run.as_of},
         "global_served_date_metadata": {"start": metadata_interval.start, "end": metadata_interval.end, "periods": metadata_scope.get("period")},
         "global_served_dates": len(global_days),
         "witness_rows": len(witnesses),
@@ -258,22 +262,24 @@ def _security_rows(
     return result
 
 
-def _short_metadata_window(context: Context, sessions: pd.DatetimeIndex, retained: Window) -> Window:
+def _short_metadata_window(context: Context, sessions: pd.DatetimeIndex, retained: Window | None) -> Window:
     # Own volume lasts exactly one publication session, with no rolling dependency.
     # Keep all scoped economic history; only unasserted older global zero-day
     # witnesses are unnecessary. Derive the first raw day through the actual
     # production publication selector, retaining the pre-year boundary when needed.
-    ready = publication_dates(context.config, Tables.sec_short_volume_security, pd.DataFrame({"date": sessions}, index=sessions), sessions)
+    ready = point_in_time(pd.DataFrame({"date": sessions}, index=sessions), context.config, Tables.sec_short_volume_security, sessions)[
+        "as_of"
+    ].reindex(sessions)
     anchors = sessions[pd.to_datetime(ready).dt.year.eq(int(context.config.validate.window_samples.year))]
     if anchors.empty:
         raise _MissingEvidenceError("No source session publishes into the asserted sample year")
-    return Window(max(retained.start, anchors[0]), retained.end)
+    return Window(anchors[0] if retained is None else max(retained.start, anchors[0]), context.run.as_of if retained is None else retained.end)
 
 
-def _ftd_metadata_periods(context: Context, sessions: pd.DatetimeIndex, retained: Window) -> set[str]:
+def _ftd_metadata_periods(context: Context, sessions: pd.DatetimeIndex, retained: Window | None) -> set[str]:
     """Actual published ZIPs in the asserted interval plus their genuine prior vector seed."""
     table = Tables.sec_fails_to_deliver_security
-    stats = context.store.key_stats(table, "period", "date", where={"date": retained})
+    stats = context.store.key_stats(table, "period", "date", where=source_read_scope(context, table, retained).get("where", {}))
     if stats.empty:
         raise _MissingEvidenceError("No persisted FTD ZIP-period metadata")
     calendar = sessions[sessions.year == int(context.config.validate.window_samples.year)]
@@ -282,8 +288,7 @@ def _ftd_metadata_periods(context: Context, sessions: pd.DatetimeIndex, retained
     start = sessions[max(0, sessions.get_loc(calendar[0]) - 1)]
     end = sessions[min(len(sessions) - 1, sessions.get_loc(calendar[-1]) + 1)]
     coverage = stats.rename(columns={"key": "period", "last": "date"})[["period", "date"]]
-    lag = int(publication_policy(context.config, table).lag.value)
-    ready = roll_to_session(pd.Series(_ftd_available_dates(coverage, lag)), sessions)
+    ready = point_in_time(coverage, context.config, table, sessions).set_index("period")["as_of"]
     events = pd.DataFrame({"period": ready.index, "published": ready.to_numpy()}).dropna().sort_values(["published", "period"])
     # Follow the publisher's forward-ZIP ordering; the seed is chosen from real
     # publication metadata, never by searching economic values for non-null data.
@@ -312,12 +317,14 @@ def _short(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
     table = Tables.sec_short_volume_security
     master, lineage = _security_identity(context)
     raw = _security_rows(context, table, SHORT_LINE_COLUMNS, master, lineage, sessions)
-    series, _ = short_volume_series(raw, master, lineage, context.universe.tickers)
+    prepared = point_in_time(raw, context.config, table, sessions)
+    series, _ = short_volume_series(prepared, master, lineage, context.universe.tickers)
     source = _pivot(series, "short_volume", sessions)
-    dates = publication_dates(context.config, table, pd.DataFrame({"date": sessions}, index=sessions), sessions)
+    clock = prepared[["date", "as_of", "_source_date"]].drop_duplicates().assign(date=lambda frame: pd.to_datetime(frame.date))
+    dates = clock.set_index("date")["as_of"].reindex(sessions)
     daily = _publish_shortvol(source, dates)
-    rows = publication_rows(context.config, table, series, sessions, "as_of")
-    ids = {date: group[list(table.pk)].to_dict("records") for date, group in raw.groupby("date")}
+    rows = series.merge(clock, on="date", validate="many_to_one")
+    ids = {pd.Timestamp(date): group[list(table.pk)].to_dict("records") for date, group in raw.groupby("date")}
     rows["_source_units"] = pd.to_datetime(rows["date"]).map(ids)
     rows.attrs.update(raw.attrs)
     return [
@@ -337,19 +344,21 @@ def _fails(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
     table = Tables.sec_fails_to_deliver_security
     master, lineage = _security_identity(context)
     raw = _security_rows(context, table, LINE_COLUMNS, master, lineage, sessions)
+    prepared = point_in_time(raw, context.config, table, sessions)
     # Keep colliding identities for the selected CUSIPs; unrelated witness lines
     # supply actual served dates but cannot acquire a sampled company's identity.
     wanted = set(master.loc[master.canonical_company.isin(context.universe.tickers), "cusip"])
     selected = prepare_master(master.loc[master.cusip.isin(wanted)])
-    basis = load_fails_basis(context, load_bugfix(context.config_dir), selected)
-    series, coverage = fails_series(raw, selected, basis)
+    windows = cube_input_windows(context, Tables.cube_part_institutionals, sessions)
+    basis = load_fails_basis(context, load_bugfix(context.config_dir), selected, windows=windows)
+    series, coverage = fails_series(prepared, selected, basis)
     series = series.loc[series.ticker.isin(context.universe.tickers)]
     state = _pivot(series, "fails_quantity", sessions)
-    lag = int(publication_policy(context.config, table).lag.value)
-    available = _ftd_available_dates(coverage, lag)
+    clock = prepared[["period", "as_of", "_source_period"]].drop_duplicates()
+    available = clock.set_index("period")["as_of"].to_dict()
     daily = _publish_ftd_zip_states(state, coverage, sessions, available)
     rows = _ftd_selected_rows(series, coverage, sessions, context.universe.tickers)
-    rows = publication_rows(context.config, table, rows, sessions, "as_of")
+    rows = rows.merge(clock, on="period", validate="many_to_one")
     ids = {period: group[list(table.pk)].to_dict("records") for period, group in raw.groupby("period")}
     rows["_source_units"] = rows.period.map(ids)
     rows.attrs.update(raw.attrs)
@@ -375,10 +384,12 @@ def _ftd_selected_rows(series: pd.DataFrame, coverage: pd.DataFrame, sessions: p
 
 def _dividends(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
     table = Tables.dividends
-    raw = load_source(context, table, columns=["ticker", "date", "dividends"])
+    windows = cube_input_windows(context, Tables.cube_part_fundamentals, sessions)
+    raw = load_source(context, table, columns=["ticker", "date", "dividends"], window=windows[table])
     if raw is None:
         raise _MissingEvidenceError("No real dividend cash events")
-    rows = publication_rows(context.config, table, raw, sessions, "available_on")
+    rows = point_in_time(raw, context.config, table, sessions)
+    rows["available_on"] = rows["as_of"]
     daily = _ttm_dividends(rows, sessions, context.universe.tickers)
     rows["as_of"] = rows.available_on
     return [
@@ -393,18 +404,20 @@ def _dividends(context: Context, sessions: pd.DatetimeIndex) -> list[_State]:
     ]
 
 
-def _packet_batches(context: Context, pins: list[dict[str, Any]]) -> list[tuple[pd.DataFrame, pd.DataFrame]]:
+def _packet_batches(context: Context, pins: list[dict[str, Any]], window: Window | None) -> list[tuple[pd.DataFrame, pd.DataFrame]]:
     """Read every version/position of each pinned manager-quarter, without ticker filtering."""
     table = Tables.sec13f_hr
-    retained = source_read_window(context.config, table, context.run.as_of)
-    if retained is None:
-        raise _MissingEvidenceError("No configured13F source interval")
-    query = _filing_layout(context.store, retained, sorted({row["cik"] for row in pins}), None, ())
+    query = _filing_layout(context.store, window, sorted({row["cik"] for row in pins}), None, ())
     lines = context.store.load(Tables.universe_cusip, columns=FTD_LINE_COLUMNS, optional=True)
     if query is None or lines is None:
         raise _MissingEvidenceError("Missing complete-accession13F layout or dated security identity")
+    read_scope = source_read_scope(context, table, window)
+    source_filters = read_scope.pop("where", {})
+    query.update(read_scope)
     scopes = {(row["cik"], row["period"]) for row in pins}
-    query["where"] = [{"cik": cik, "period": pd.Timestamp(period), "parse_status": ["complete", "position"]} for cik, period in scopes]
+    query["where"] = [
+        {**source_filters, "cik": cik, "period": pd.Timestamp(period), "parse_status": ["complete", "position"]} for cik, period in scopes
+    ]
     stream = context.store.iter_load(table, chunksize=100_000, order_by=["cik", "period", "accession_number"], **query)
     batches = []
     for packet in _iter_whole_quarters(stream):
@@ -444,7 +457,8 @@ def _packet_rows(states: pd.DataFrame, manifests: pd.DataFrame, pins: list[dict[
 
 
 def _thirteen_f(context: Context, sessions: pd.DatetimeIndex, pins: list[dict[str, Any]]) -> list[_State]:
-    batches = _packet_batches(context, pins)
+    windows = cube_input_windows(context, Tables.cube_part_sec_thirteen, sessions)
+    batches = _packet_batches(context, pins, windows[Tables.sec13f_hr])
     if not batches:
         raise _MissingEvidenceError("No complete pinned13F manager-quarter packets")
     manifests = pd.concat([prepare_book_vintages(filings, holdings, sessions, context.config) for filings, holdings in batches], ignore_index=True)
@@ -536,6 +550,7 @@ def _assemble_fields(context: Context, states: list[_State], probes: dict[str, l
         config.data_aggregate.assembly.compulsory_parts = [Tables.cube_part_prices.name, state.part.name]
         config.data_aggregate.assembly.optional_parts = []
         config.data_aggregate.assembly.columns = {state.part.name: columns}
+        config.data.tables.cube.warmup = {name: 0 for name in config.data_aggregate.assembly.compulsory_parts}
         replay.config = config
         step = StepAssembleCube(replay, config)
         cube, _ = step._assemble(write)
@@ -744,7 +759,11 @@ def _planning_trace(context: Context, sessions: pd.DatetimeIndex, manifest: dict
     sources = {
         table.name: {
             "resume_mode": None if table.resume is None else table.resume.mode,
-            "source_work": OmegaConf.to_container(scoped.config.data.tables[table.name].reprocess, resolve=True),
+            "overlap": (
+                OmegaConf.to_container(scoped.config.data.tables[table.name].overlap, resolve=True)
+                if "overlap" in scoped.config.data.tables.get(table.name, {})
+                else None
+            ),
             "note": "Configured source-work/Resume mapping only; provider and cache work is covered by separate propagation tests",
         }
         for table in timing_sample_tables()

@@ -6,10 +6,10 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
+source_commit: 39c94c0dd62dcb4730a2bbc77f437f5a6fdabfcf
 integration_parents:
-  - f06e3781ccb5756a0a1406895182de37329e282b
-  - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
+  - 1195d18d6dcd3e380cacc0e8cb4a6cd5f5392090
+  - ad346fa6d7c31c57046942e966727edb8414916f
 ---
 # Configuration
 
@@ -37,7 +37,7 @@ Callers use attribute access such as `self._config.data_aggregate.targets.horizo
 | `model`, `train` | [modelling.yml](../../configs/modelling.yml) | Ensemble composition, target choice, CV, diagnostics, decay, `models_dir` (artifact folder under the data store), fresh assessment controls and train/test boundaries. Each family YAML under `configs/models/` (e.g. [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml)) also sets `task: regression \| classification`. |
 | `linear`, `lgbm`, `random_forest` | [lgbm_modelling.yml](../../configs/models/lgbm_modelling.yml) and sibling family files | Family hyperparameters and family-specific feature columns. |
 | `portfolio` | [portfolio.yml](../../configs/portfolio.yml) | Fixed LS/S&P/cash budgets, optional end date (cutoff and start come from train.end_date), allocation cadence, momentum/risk windows, cash remuneration, proportional costs and read batch size. |
-| `data` | [data.yml](../../configs/data.yml) | Per-table fixed start/end dates, source and coverage boundaries, reprocessing modes and explicit units, publication clocks/PIT buffers, freshness and cube read context. |
+| `data` | [data.yml](../../configs/data.yml) | Source extraction starts, overlap reference columns, publication lags and explicit per-input cube history. |
 | `validate` | [validate.yml](../../configs/validate.yml) | Read-only checks, comparison thresholds and independent scientific expectations. |
 
 `local.paths.peers_dir` in [config.yml](../../configs/config.yml) defaults to `output/peers` beneath `DATA_STORE`; an absolute path remains absolute. [Context](../../src/context.py) keeps `SECTOR_PEERS_PATH` as the complete active `sector_peers.json` filename. The active cache and named `.BEFORE.json.bak` backup relocate unchanged; peer construction and PostgreSQL description/embedding caches are unaffected. Activate path changes only with verified cache bytes at the destination; see [peer artifact paths](../modules/data-peers.md#artifact-paths).
@@ -79,7 +79,7 @@ Unused decay and coverage-break settings are removed. Filing-wide value-unit rep
 
 ## Extraction settings
 
-Fixed `data.tables.<registered table name>.start_date` and optional `end_date` define each dated table's requested range. Policy validation rejects missing, unknown and contradictory timing fields before constructing source clients or the store. `source_start` records the source floor; `coverage_start` records a separate broad-coverage boundary. `reprocess` declares a numeric tail with explicit units, missing documents/units, source changes, a candidate check or a snapshot. The shared [Window resolver](../../src/utils/window.py) separates write overlap from computation context. [Resume](../../src/data_store/schema.py) retains structural mode, key, frontier column, EDGAR forms and archive period metadata; it declares no dates, overlap or freshness values.
+`data.tables.<registered table name>` in [data.yml](../../configs/data.yml) has one supported format: source `start_date`, optional `overlap: {method, column, days}` and `pit: {column, lag_days}`. Only `days`, `missing_docs` and `missing_zips` overlap methods are accepted; only `days` has a day count. Undated lookups have no temporal entry. Dated actions and roster snapshots have start dates only. Co-produced children retain parent work selection and their own source clocks where independently consumed. Validation rejects obsolete fields, unknown table/column names and invalid values before source or store construction. The [table registry](../../src/data_store/schema.py) owns physical names, keys, forms and structural archive units; the [Window resolver](../../src/utils/window.py) owns inclusive intervals.
 
 Every extraction/cube command accepts `--as-of` as the execution cutoff. [Context](../../src/context.py) captures that instant once and derives its New York market date. The extraction DAG relays the same validated timestamp to every source task and the triggered aggregation DAG; retries reuse it. A cutoff caps configured dates and does not widen them.
 
@@ -89,29 +89,26 @@ Key distinctions:
 - EDGAR walks compare configured-range index accessions with completed filings; they have no numeric day-tail control;
 - ZIP downloads compare published units with valid cached files; normal ingestion reuses completed units. Explicit bounded recovery may replay them;
 - the universe holds one ticker per issuer; a second share class is an `aliases` entry in [universe.yml](../../configs/universe.yml), never a `tickers` entry, so no class is counted twice;
-- `data_extract.earnings_calls.read_workers` in [data_extract.yml](../../configs/data_extract.yml) controls parallel HuggingFace row-group reads; writes stay on one thread. The source table's candidate lookback is180 calendar days in [data.yml](../../configs/data.yml). The dataset repository and file path remain source facts;
+- `data_extract.earnings_calls.read_workers` in [data_extract.yml](../../configs/data_extract.yml) controls parallel HuggingFace row-group reads; writes stay on one thread. Each source key resumes from its latest saved reference minus 180 calendar days in [data.yml](../../configs/data.yml), clamped to its extraction start. The dataset repository and file path remain source facts;
 - `data_aggregate.earnings_calls` in [data_aggregate.yml](../../configs/data_aggregate.yml) owns the sentiment service and66-session feature signal. Embedding service/batch/text budgets remain in [gpt.yml](../../configs/gpt.yml). [data.yml](../../configs/data.yml) declares the call publication buffer of three calendar days, market-session roll, and seven-calendar-day text-part rewrite. Older feature corrections require an explicit historical rebuild using valid cached sentiment/embeddings;
 - `sec_retry` (3 attempts, waits of 5 s then 20 s, Retry-After capped at 120 s) is the one retry policy of every SEC request, applied by [sec_io.py](../../src/data_extract/utils/common/sec_io.py);
 - `retry_rounds` (3 rounds, waits of 60, 120 and 240 s, threshold 0.985, `min_failed` 2): a ticker whose EDGAR read rate in a run is below the threshold, with at least `min_failed` failed documents, re-reads only those documents in-task; the rest is listed again on the next run;
 - `max_documents_per_run` (5,000) caps the documents one EDGAR fetch reads per run, newest first; a larger work list logs an ERROR and drains over later runs, and `--no-cap` lifts the cap for a one-time backlog;
 - `llm_text_budget` holds the characters each LLM task sends from the stored text tables: `employees` (60,000, the 10-K excerpt with its prefix), `def14a` (130,000, the cut of each stored proxy section payload) and `votes` (40,000, the cut of each stored Item 5.07 narrative). A change takes effect on the next LLM run with no re-walk;
 - `validate.fundamentals_comparison` in [validate.yml](../../configs/validate.yml) (`gap_pct` 0.03, `field_share` 0.05, `top_tickers` 3): `fundamentals-check` lists a shared field when at least `field_share` of the exactly matched `(ticker, as_of)` rows with both values present differ by more than `gap_pct` of the Sharadar value, with its `top_tickers` largest-gap tickers. The check writes nothing and a finding never fails the task;
-- `prediction_fresh_share` (0.95): `modelling predict` refuses to score, and `extraction-status` marks the table RED, when the share of universe tickers whose own latest `prices`, `sharadar_fundamentals_facts` or `sharadar_fundamentals_history` date is within the table's cadence tolerance falls below it;
 - LLM model, concurrency and prompt cache are owned by [gpt.yml](../../configs/gpt.yml). `llm_model.open_ai` selects GPT-6 Luna; employee extraction selects `llm_model.open_ai_cheap` (GPT-6 Luna) with `reasoning_effort.employees: none`. `gpt.threads` (12) sizes the LLM worker pool for DEF 14A and Item 5.07 vote extraction; employee extraction builds `data_extract.fundamentals_workers` extractors of one thread each. Every text budget is `data_extract.llm_text_budget`; the extracter sends the payload it is given whole.
 
-## Data availability and freshness
+## Publication and input history
 
-[configs/data.yml](../../configs/data.yml) declares source/coverage boundaries and publication clocks. Each table's `pit` policy defines its source clock, buffer and market-session roll, or explicitly inherits a parent source so a derived table adds no second delay. `derived_feature_starts` retains declared feature coverage boundaries; these do not synthesize values.
+[point_in_time](../../src/utils/publication.py) is the shared dataframe entry point. It uses exactly the source's `pit.column`, adds `pit.lag_days` calendar days, then rolls forward to the first actual market session. Prepare independently consumed dated sources before joining them and retain their original clocks. Invalid row dates are reported and excluded; a missing configured column is a contract error. Future availability never rolls backward.
 
-Runtime eligibility is the intersection of:
+Both notes tables use period end +12 calendar days; FTD uses half-month end +21; both 13F book families use filing date +2; calls use call date +3. Raw acceptance and capture timestamps remain evidence and do not override the declared clock. Cube and assembly dates add no lag.
 
-1. the configured source boundary;
-2. actual source publication/coverage;
-3. ticker or security eligibility;
-4. required price, denominator, or related-source cells; and
-5. family-specific completeness rules.
+Each cube's `warmup` maps physical input tables to additional calendar days before its actual earliest rewrite date. Integers read from rewrite start minus that amount through the run ceiling. Zero retains the inclusive first write date; `null` reads full stored history without an artificial lower bound. Missing dependencies fail. Entity/column projections remain. Finite budgets cannot silently widen; insufficient budgets refuse the calculation, while naturally short stored history retains ordinary unavailable/minimum-observation behavior. Statistical windows stay in [data_aggregate.yml](../../configs/data_aggregate.yml).
 
-`data.freshness.insider_max_lag_days` (default4) is the insider freshness threshold used by `cube-status`: the insider source is late when D, the newest stored `insider_transactions.filing_date` (markers included), is more than that many days behind the reference price date. EDGAR remains authoritative over ZIP duplicates.
+Institutional Schedule 13D/13G inputs explicitly use `null`: historical empty-filing markers classify submitters, so a finite cutoff can change current counts. Finite budgets are refused before either ownership payload read. FTD share-basis inputs also explicitly retain full split, action and fundamental-count evidence; their output rewrite remains 30 calendar days. Macro target inputs apply their configured publication lag before factor construction.
+
+Operational freshness settings, `extraction-status`, source-age status checks and the prediction freshness guard are removed. Economic age rules, completeness, listing/security eligibility and denominator requirements remain. Listing grace of 10 market sessions and identity recheck of 7 calendar days are `data_extract.listing_end_grace_sessions` and `identity_change_recheck_days`; neither widens source bounds.
 
 ## Cube assembly selection
 
@@ -145,7 +142,7 @@ A missing `columns` mapping, omitted part entry, null or empty list includes all
         - f_ocf_yield
 ```
 
-Unknown parts, malformed or duplicate lists, missing selected columns and selected-name collisions fail before changing output. Selection controls both the store read and the physical output schema; reassembly removes old deselected columns. It does not change producer tasks. Later removal of model inputs requires compatible model configuration/artifacts and retraining; the existing prediction input guard remains active.
+Unknown parts, malformed or duplicate lists, missing selected columns and selected-name collisions fail before changing output. Selection controls both the store read and the physical output schema; reassembly removes old deselected columns. It does not change producer tasks. Later removal of model inputs requires compatible model configuration/artifacts and retraining; the prediction feature/schema guard remains active.
 
 ## Cube settings
 
@@ -164,7 +161,7 @@ Important blocks:
 | `fundamentals_features` | `earnings_scale_quarters` controls prior SUE scale (2–8). Eight lag slots, eight-quarter persistence and three-session response are fixed with their mathematical owners; changing them requires a feature-contract migration. |
 | `workforce` | `part_time_weight`: α of the workforce headcount proxy FT + α·PT (0.65; must lie in [0.5, 1]). See [workforce features](./modelling-and-portfolio.md#workforce-features). |
 
-Every numerical value in [data_aggregate.yml](../../configs/data_aggregate.yml) carries an economic or measured justification. Read the adjacent comment before editing. If a feature introduces a longer daily look-back, update the [part registry](../../src/data_aggregate/utils/common/parts.py) as well.
+Every numerical value in [data_aggregate.yml](../../configs/data_aggregate.yml) carries an economic or measured justification. Read the adjacent comment before editing. If a feature introduces a longer look-back, check its explicit input budget in [data.yml](../../configs/data.yml) and its binding requirement in the [part registry](../../src/data_aggregate/utils/common/parts.py).
 
 ## Institutional correction settings
 
@@ -236,11 +233,13 @@ Assess always recomputes scores, metrics, SHAP/PDP and HTML from saved models an
 
 ## Cube timing and recovery
 
-Each cube part resolves its `data.tables.<part>` policy through [plan_window](../../src/data_aggregate/utils/common/incremental.py) and the immutable [Window types](../../src/utils/window.py). `Context.run` owns the execution instant and mode; substeps receive the resolved plan instead of redefining full mode or overlap. Configured start/end dates bound writes in every mode. Warm-up expands reads, retaining sparse causal history, whole 13F books and required share-basis lineage without authorizing older writes. Naturally short history retains its ordinary null/minimum-observation behavior; an undersized configured warm-up is refused.
+Each cube resolves its policy through [plan_window](../../src/data_aggregate/utils/common/incremental.py) and immutable [Window types](../../src/utils/window.py). `Context.run` owns the execution instant and mode. Raw observed prices define root output dates; saved price-part dates and keys define downstream output. Cubes have no independent start/end/PIT block. Explicit per-input Windows expand reads while writes retain their own bounds.
 
-Normal rewrites are governance380 calendar days, fundamentals/13F100, prices/betas/momentum/institutionals30 and text7. Targets rewrite90 actual market sessions to mature their configured forward labels. [Assembly](../../src/data_aggregate/transformers/step_assemble_cube.py) takes the earliest actual write boundary of its selected components plus its own catch-up boundary. It does not compare raw numbers with mixed units. Separate CLI/DAG tasks exchange [write receipts](../../src/data_aggregate/utils/common/assembly.py) with the same original execution instant, root mode, configuration and complete ticker scope. Pass the same explicit `--as-of` value to the part tasks and assembly; matching calendar dates alone do not establish matching execution cutoffs. A cold component may still resolve to initial mode inside an incremental root run. Missing or incompatible receipts, including older receipts that record only a day, cannot certify assembly; regenerate the affected part receipts before assembly.
+Normal rewrite tails are governance 380 calendar days, fundamentals/13F 100, prices/betas/momentum/institutionals 30, text 7 and targets 150. The target planner checks actual market sessions against every configured horizon and refuses an insufficient overlap. Joint targets/betas use the union of input requirements and retain separate write intervals. [Assembly](../../src/data_aggregate/transformers/step_assemble_cube.py) takes the earliest actual selected-part write boundary plus its catch-up boundary and reads its zero-history inputs over that interval.
 
-Publication buffers come only from source policies in data.yml and roll forward to retained actual market sessions, including holidays. Raw filing, acceptance, call and ex-dividend dates remain available separately from eligibility. Both13F book families use filing/later public acceptance+2 calendar days; the90-calendar-day superinvestor book lifetime is separate. Retained stale or invalid sources do not become known zero.
+Separate CLI/DAG tasks exchange [write receipts](../../src/data_aggregate/utils/common/assembly.py) with the same original execution instant, root mode, configuration and complete ticker scope. Pass the same explicit `--as-of` to parts and assembly. A cold part may resolve to initial mode inside an incremental root run. Missing or incompatible receipts cannot certify assembly; regenerate them.
+
+Both 13F book families use exactly the declared filing-date clock plus 2 calendar days; the 90-calendar-day superinvestor book lifetime remains a separate economic rule. The approved bounded-memory path retains its broad stream and two whole-roster passes for consensus and final repair, all with identical source bounds. Stale or invalid sources do not become known zero.
 
 The existing governance fills intentionally use later filings for CEO pay, stint constants, age and director/person attributes. The existing pooled13F unit/value repair also retains its donor evidence calculation. These user-approved retrospective calculations are explicit exceptions to strict evidence-level PIT; applying a destination filing buffer does not certify those imputed/repaired values as strictly causal. Their algorithms are preserved by this refactor.
 

@@ -21,7 +21,6 @@ from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_
 from src.data_aggregate.utils.price.frames import load_price_frames, load_trading_calendar
 from src.data_aggregate.utils.sec_thirteen.superinvestor_books import prepare_superinvestor_book_history
 from src.data_store.schema import Table, Tables
-from src.utils.data_policy import source_read_window
 from src.utils.window import Window, WindowPlan, WindowRun
 from tests.canonical_schema import create_canonical
 from tests.data_aggregate.test_price_pit_contract import seed_prices
@@ -33,15 +32,14 @@ from tests.support.universe import universe_of
 def test_actual_price_build_obeys_configured_dates(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     context.config = fixture_config()
-    item = context.config.data.tables[Tables.cube_part_prices.name]
-    item.start_date, item.end_date = "2022-10-03", "2022-10-21"
-    context.run = WindowRun("full", "explicit bounded price rebuild", pd.Timestamp("2022-11-16"))
+    context.run = WindowRun("full", "observed price-date rebuild", pd.Timestamp("2022-10-21"))
 
     StepCubePrices(context, context.config).run()
 
     df_saved = sqlite_store.load(Tables.cube_part_prices)
     assert not df_saved.empty
-    assert pd.to_datetime(df_saved.date).between("2022-10-03", "2022-10-21").all(), (df_saved.date.min(), df_saved.date.max())
+    assert pd.to_datetime(df_saved.date).between("2020-01-02", "2022-10-21").all(), (df_saved.date.min(), df_saved.date.max())
+    assert pd.to_datetime(df_saved.date).min() == pd.Timestamp("2020-01-02")
     assert set(df_saved.ticker) == {"AAA", "BBB"}
     print("SANITY: the actual price producer publishes only its configured finite dates and scoped tickers, including full mode.")
 
@@ -50,11 +48,9 @@ def test_actual_price_build_obeys_configured_dates(sqlite_store: Any, tmp_path: 
 def test_every_part_uses_configured_overlap_and_ignores_future_frontier(sqlite_store: Any, table: Table) -> None:
     config = fixture_config()
     item = config.data.tables[table.name]
-    item.start_date, item.end_date = "2026-02-01", "2026-11-10"
     sessions = pd.bdate_range("2010-01-01", "2026-12-31")
-    overlap = 120 if table == Tables.cube_part_targets else 9
-    item.reprocess.overlap.value = overlap
-    item.reprocess.overlap.unit = "trading_sessions" if table == Tables.cube_part_targets else "calendar_days"
+    overlap = 150 if table == Tables.cube_part_targets else 9
+    item.overlap.days = overlap
     sqlite_store.replace(table, pd.DataFrame({"ticker": ["AAPL", "AAPL"], "date": pd.to_datetime(["2026-10-30", "2026-12-31"]), "value": 1.0}))
     context = cast(
         Context,
@@ -69,9 +65,9 @@ def test_every_part_uses_configured_overlap_and_ignores_future_frontier(sqlite_s
     plan = plan_window(context, table, sessions)
 
     assert plan is not None and plan.frontier == pd.Timestamp("2026-10-30")
-    expected = sessions[sessions.get_loc("2026-10-30") - overlap] if table == Tables.cube_part_targets else pd.Timestamp("2026-10-21")
-    assert plan.write.start == expected and plan.write.end == pd.Timestamp("2026-11-10")
-    assert plan.requested.start == pd.Timestamp("2026-02-01")
+    expected = pd.Timestamp("2026-10-30") - pd.Timedelta(days=overlap)
+    assert plan.write.start == expected and plan.write.end == pd.Timestamp("2026-11-16")
+    assert plan.requested.start == sessions[0]
     assert plan.run is context.run
     print(
         f"SANITY: {table.name} uses its changed configured overlap, finite bounds and unchanged root anchor; a later stored suffix cannot move the frontier."
@@ -82,6 +78,7 @@ def test_assembly_inherits_mixed_units_and_actual_upstream_recovery(sqlite_store
     config = fixture_config()
     config.data_aggregate.assembly.compulsory_parts = [Tables.cube_part_prices.name, Tables.cube_part_targets.name, Tables.cube_part_governance.name]
     config.data_aggregate.assembly.optional_parts = []
+    config.data.tables.cube.warmup = {name: 0 for name in config.data_aggregate.assembly.compulsory_parts}
     sessions = pd.bdate_range("2010-01-01", "2026-11-16")
     sqlite_store.replace(Tables.cube_part_prices, pd.DataFrame({"ticker": "AAPL", "date": sessions, "close_split": 100.0}))
     for table in (Tables.cube_part_targets, Tables.cube_part_governance, Tables.cube):
@@ -100,9 +97,9 @@ def test_assembly_inherits_mixed_units_and_actual_upstream_recovery(sqlite_store
 
     ordinary = step._plan_window(None)
     assert ordinary is not None and ordinary.write.start == pd.Timestamp("2026-11-13") - pd.Timedelta(days=380)
-    config.data.tables.cube_part_governance.reprocess.overlap.value = 4
+    config.data.tables.cube_part_governance.overlap.days = 4
     shorter_governance = step._plan_window(None)
-    assert shorter_governance is not None and shorter_governance.write.start == sessions[sessions.get_loc("2026-11-13") - 90]
+    assert shorter_governance is not None and shorter_governance.write.start == pd.Timestamp("2026-11-13") - pd.Timedelta(days=150)
     written = {
         Tables.cube_part_prices: Window(pd.Timestamp("2019-01-02"), pd.Timestamp("2026-11-16")),
         Tables.cube_part_targets: Window(pd.Timestamp("2026-07-01"), pd.Timestamp("2026-11-16")),
@@ -151,8 +148,6 @@ def test_scoped_price_values_keep_the_complete_market_clock(sqlite_store: Any) -
 
 def test_governance_source_read_obeys_its_configured_clock_and_scope(sqlite_store: Any) -> None:
     config = fixture_config()
-    item = config.data.tables[Tables.def14a_llm.name]
-    item.start_date, item.source_start, item.end_date = "2026-01-01", "2026-01-01", "2026-06-30"
     create_canonical(sqlite_store.engine, [Tables.def14a_llm])
     sqlite_store.save(
         Tables.def14a_llm,
@@ -176,7 +171,7 @@ def test_governance_source_read_obeys_its_configured_clock_and_scope(sqlite_stor
         ),
     )
 
-    df_source = StepCubeGovernance(context, config)._load_def14a(source_read_window(config, Tables.def14a_llm, context.run.as_of))
+    df_source = StepCubeGovernance(context, config)._load_def14a(Window(pd.Timestamp("2026-01-01"), pd.Timestamp("2026-06-30")))
 
     assert df_source is not None and df_source.accession_number.tolist() == ["inside"]
     print("SANITY: governance reads only the configured source prefix/ceiling and ticker scope; a future filing cannot enter cleaning or history.")
@@ -185,8 +180,6 @@ def test_governance_source_read_obeys_its_configured_clock_and_scope(sqlite_stor
 def test_proxy_companion_scope_preserves_pay_inputs(sqlite_store: Any) -> None:
     config = fixture_config()
     table = Tables.def14a_executive_comp
-    item = config.data.tables[table.name]
-    item.start_date, item.source_start, item.end_date = "2026-01-01", "2026-01-01", "2026-06-30"
     create_canonical(sqlite_store.engine, [table])
     parents = pd.DataFrame(
         {
@@ -207,7 +200,7 @@ def test_proxy_companion_scope_preserves_pay_inputs(sqlite_store: Any) -> None:
         ),
     )
 
-    df_child = StepCubeGovernance(context, config)._load_proxy_child(table)
+    df_child = StepCubeGovernance(context, config)._load_proxy_child(table, Window(pd.Timestamp("2026-01-01"), pd.Timestamp("2026-06-30")))
 
     assert df_child is not None and {"accession_number", "as_of", "total", "salary"} <= set(df_child.columns)
     assert df_child.accession_number.tolist() == ["inside"] and df_child.total.iloc[0] == 100.0
@@ -226,12 +219,12 @@ def test_upstream_receipts_refuse_changed_pipeline_configuration(sqlite_store: A
         ),
     )
     sqlite_store.replace(Tables.cube_part_prices, pd.DataFrame({"ticker": ["AAPL"], "date": pd.to_datetime(["2026-11-13"]), "close_split": 100.0}))
-    plan = plan_window(context, Tables.cube_part_prices, pd.bdate_range("2026-01-01", "2026-11-16"))
+    plan = plan_window(context, Tables.cube_part_prices, load_trading_calendar(context))
     assert plan is not None
     payload = json.dumps([write_receipt(context, {Tables.cube_part_prices: plan})])
     assert read_receipts(context, payload) == {Tables.cube_part_prices: plan.write}
 
-    config.data.tables.cube_part_prices.reprocess.overlap.value += 1
+    config.data.tables.cube_part_prices.overlap.days += 1
     with pytest.raises(ValueError, match="configuration"):
         read_receipts(context, payload)
     print(
@@ -240,16 +233,21 @@ def test_upstream_receipts_refuse_changed_pipeline_configuration(sqlite_store: A
 
 
 @pytest.fixture
-def receipt_context_and_plan() -> tuple[Context, WindowPlan]:
+def receipt_context_and_plan(sqlite_store: Any) -> tuple[Context, WindowPlan]:
+    interval = Window(pd.Timestamp("2026-11-03"), pd.Timestamp("2026-11-10"))
+    sqlite_store.save(
+        Tables.cube_part_prices,
+        pd.DataFrame({"ticker": "AAPL", "date": pd.bdate_range(interval.start, interval.end), "close": 100.0}),
+    )
     context = cast(
         Context,
         SimpleNamespace(
             config=fixture_config(),
+            store=sqlite_store,
             universe=universe_of(["AAPL"]),
             run=WindowRun("incremental", "exact receipt cutoff", pd.Timestamp("2026-11-10T15:00:00Z")),
         ),
     )
-    interval = Window(pd.Timestamp("2026-11-03"), pd.Timestamp("2026-11-10"))
     plan = WindowPlan(interval, interval, interval, context.run, None, (("ticker", ("AAPL",)),))
     return context, plan
 
@@ -307,6 +305,9 @@ def test_receipts_allow_cold_component_promotion(sqlite_store: Any) -> None:
     assert plan.run.instant == context.run.instant
     record = json.loads(write_receipt(context, {Tables.cube_part_prices: plan}))
     assert record["mode"] == "incremental"
+    # A successful cold price receipt follows persistence of its actual observed grid.
+    dates = pd.bdate_range(plan.write.start, plan.write.end)
+    sqlite_store.replace(Tables.cube_part_prices, pd.DataFrame({"ticker": "AAPL", "date": dates, "close_split": 100.0}))
     assert read_receipts(context, json.dumps([record])) == {Tables.cube_part_prices: plan.write}
     print("SANITY: a cold component may promote to initial mode while preserving its incremental root's exact cutoff and receipt mode.")
 
@@ -361,7 +362,7 @@ def test_13f_actual_book_path_uses_two_day_lag_and_ninety_day_origin() -> None:
 def test_price_counts_respect_filing_buffer(sqlite_store: Any, tmp_path: Path, lag: int) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     context.config = fixture_config()
-    context.config.data.tables.sharadar_fundamentals_facts.pit.lag.value = lag
+    context.config.data.tables.sharadar_fundamentals_history.pit.lag_days = lag
     context.run = WindowRun("full", "share-count eligibility check", pd.Timestamp("2022-12-01"))
     StepCubePrices(context, context.config).run()
     df_saved = sqlite_store.load(Tables.cube_part_prices)
@@ -377,8 +378,6 @@ def test_price_counts_respect_filing_buffer(sqlite_store: Any, tmp_path: Path, l
 
 def test_assembly_respects_each_component_configured_dates(sqlite_store: Any) -> None:
     config = fixture_config()
-    config.data.tables.cube_part_momentum.start_date = "2026-05-05"
-    config.data.tables.cube_part_momentum.end_date = "2026-05-06"
     dates = pd.to_datetime(["2026-05-04", "2026-05-05", "2026-05-06", "2026-05-07"])
     sqlite_store.replace(Tables.cube_part_momentum, pd.DataFrame({"ticker": "AAPL", "date": dates, "f_momentum": 1.0}))
     context = cast(
@@ -391,7 +390,7 @@ def test_assembly_respects_each_component_configured_dates(sqlite_store: Any) ->
             run=WindowRun("full", "finite component read", pd.Timestamp("2026-11-16")),
         ),
     )
-    panel = StepAssembleCube(context, config)._read_part(Tables.cube_part_momentum, None, Window(dates[0], dates[-1]), optional=False)
+    panel = StepAssembleCube(context, config)._read_part(Tables.cube_part_momentum, None, Window(dates[1], dates[2]), optional=False)
     assert panel is not None and pd.to_datetime(panel.date).tolist() == list(dates[1:3])
     print("SANITY: assembly cannot revive component values stored outside that component's configured start and end dates.")
 
@@ -411,7 +410,7 @@ def test_receipts_reject_partial_scope(sqlite_store: Any, tickers: list[str]) ->
     sqlite_store.replace(
         Tables.cube_part_prices, pd.DataFrame({"ticker": ["AAPL", "MSFT"], "date": pd.to_datetime(["2026-11-13"] * 2), "close_split": 100.0})
     )
-    plan = plan_window(context, Tables.cube_part_prices, pd.bdate_range("2026-01-01", "2026-11-16"))
+    plan = plan_window(context, Tables.cube_part_prices, load_trading_calendar(context))
     assert plan is not None
     record = json.loads(write_receipt(context, {Tables.cube_part_prices: plan}))
     record["parts"][Tables.cube_part_prices.name]["tickers"] = tickers
@@ -432,7 +431,7 @@ def test_receipts_reject_a_different_root_mode(sqlite_store: Any) -> None:
         ),
     )
     sqlite_store.replace(Tables.cube_part_prices, pd.DataFrame({"ticker": ["AAPL"], "date": pd.to_datetime(["2026-11-13"]), "close_split": 100.0}))
-    plan = plan_window(context, Tables.cube_part_prices, pd.bdate_range("2026-01-01", "2026-11-16"))
+    plan = plan_window(context, Tables.cube_part_prices, load_trading_calendar(context))
     assert plan is not None
     payload = json.dumps([write_receipt(context, {Tables.cube_part_prices: plan})])
     context.run = WindowRun("full", "different root mode", context.run.instant)
@@ -513,7 +512,7 @@ def test_truncated_source_calendar_cannot_hide_a_later_saved_frontier(sqlite_sto
 @pytest.mark.parametrize("table", [Tables.cube_part_governance, Tables.cube_part_fundamentals, Tables.cube_part_momentum, Tables.cube_part_betas])
 def test_undersized_configured_warmup_is_rejected_even_on_short_history(sqlite_store: Any, table: Table) -> None:
     config = fixture_config()
-    config.data.tables[table.name].warmup.grid.value = 1
+    config.data.tables[table.name].warmup.cube_part_prices = 1
     context = cast(
         Context,
         SimpleNamespace(
@@ -523,7 +522,7 @@ def test_undersized_configured_warmup_is_rejected_even_on_short_history(sqlite_s
             run=WindowRun("full", "short actual history", pd.Timestamp("2026-11-16")),
         ),
     )
-    with pytest.raises(ValueError, match="warm-up"):
+    with pytest.raises(ValueError, match="warm.?up"):
         plan_window(context, table, pd.DatetimeIndex(["2026-11-16"]))
     print(f"SANITY: {table.name} rejects an insufficient configured warm-up even when the market clock is naturally short.")
 
@@ -540,6 +539,6 @@ def test_financial_warmup_covers_the_configured_history_calculation(sqlite_store
             run=WindowRun("full", "configured long financial history", pd.Timestamp("2026-11-16")),
         ),
     )
-    with pytest.raises(ValueError, match="warm-up"):
+    with pytest.raises(ValueError, match="warm.?up"):
         plan_window(context, Tables.cube_part_fundamentals, pd.bdate_range("2010-01-01", "2026-11-16"))
     print("SANITY: a longer configured financial history cannot silently exceed the configured computation warm-up.")

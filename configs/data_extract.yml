@@ -1,4 +1,6 @@
 data_extract:
+  listing_end_grace_sessions: 10 # Keep an ended listing eligible for this many market sessions.
+  identity_change_recheck_days: 7 # Recheck changed identity keys for this many calendar days.
   earnings_calls:
     read_workers: 4 # Parallel reads from pinned source.
 
@@ -38,9 +40,6 @@ data_extract:
     employees: 60000
     def14a: 130000
     votes: 40000
-
-  # Prediction requires fresh prices and Sharadar fundamentals;
-  # extraction-status flags stale tables RED.
 
   # Workers for history replay (processes) and employees (threads).
   # SEC facts extraction uses separate rate-limited workers.

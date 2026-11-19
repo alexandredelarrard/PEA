@@ -10,10 +10,9 @@ from omegaconf import OmegaConf
 
 from src.context import Context
 from src.data_aggregate.utils.common.pit import fundamentals_to_daily
-from src.data_aggregate.utils.institutionals.short_flow_features import _ftd_available_dates, _publish_ftd_zip_states
+from src.data_aggregate.utils.institutionals.short_flow_features import _publish_ftd_zip_states
 from src.data_store.schema import Tables
-from src.utils.data_policy import publication_policy
-from src.utils.publication import publication_rows
+from src.utils.publication import point_in_time
 from src.utils.window import Window, WindowRun
 from src.validate.checks.window_lineage import (
     _boundaries,
@@ -24,7 +23,7 @@ from src.validate.checks.window_lineage import (
     check_window_lineage,
     expected_publication,
 )
-from src.validate.checks.window_plan import _check_part, _move
+from src.validate.checks.window_plan import _check_part, _subtract_days, check_window_plans
 from src.validate.cli import cli
 from src.validate.result import CheckResult, Finding, jsonable
 from tests.support.config import fixture_config
@@ -49,12 +48,46 @@ def test_lineage_command_is_permanent() -> None:
     print("SANITY: selected-source lineage has a permanent read-only validation entry point.")
 
 
+@pytest.mark.parametrize(
+    ("lag", "expected"),
+    [(0, "2026-07-02"), (1, "2026-07-06"), (2, "2026-07-06"), (3, "2026-07-06"), (12, "2026-07-14"), (21, "2026-07-23")],
+)
+def test_source_column_calendar_policy_oracle(lag: int, expected: str) -> None:
+    sessions = pd.bdate_range("2026-07-01", "2026-08-05").difference(pd.to_datetime(["2026-07-03"]))
+    policy = {"column": "as_of", "lag_days": lag}
+    actual = expected_publication(policy, {"as_of": "2026-07-02", "accepted_at": "2026-08-01"}, sessions)
+    assert actual == pd.Timestamp(expected)
+    assert pd.isna(expected_publication(policy, {"as_of": "invalid"}, sessions))
+    assert pd.isna(expected_publication(policy, {"as_of": "2026-09-01"}, sessions))
+    print(
+        f"SANITY: independent source-column oracle applies exactly {lag} calendar days and forward market-session roll; invalid/future stays unavailable."
+    )
+
+
+@pytest.mark.parametrize(
+    ("period", "lag", "expected"),
+    [("2026_03", 12, "2026-04-13"), ("2026q1", 12, "2026-04-13"), ("202607a", 21, "2026-08-05"), ("202607b", 21, "2026-08-21")],
+)
+def test_archive_source_period_oracle(period: str, lag: int, expected: str) -> None:
+    sessions = pd.bdate_range("2026-01-01", "2026-09-01").difference(pd.to_datetime(["2026-04-03", "2026-07-03"]))
+    policy = {"column": "period", "lag_days": lag}
+    assert expected_publication(policy, {"period": period, "filed": "2026-09-01", "available_at": "2026-09-01"}, sessions) == pd.Timestamp(expected)
+    assert pd.isna(expected_publication(policy, {"period": "2026_13"}, sessions))
+    assert pd.isna(expected_publication(policy, {"period": None}, sessions))
+    print(f"SANITY: independent {period}+{lag}CD oracle uses the archive end, preserving other raw clocks without an eligibility override.")
+
+
 def _known_state() -> tuple[Context, _State, pd.DatetimeIndex]:
     config = fixture_config()
-    context = cast(Context, SimpleNamespace(config=config, universe=SimpleNamespace(tickers=["AAA"])))
     sessions = pd.DatetimeIndex(["2026-07-01", "2026-07-02", "2026-07-06", "2026-07-07", "2026-07-08"])
+    context = cast(
+        Context,
+        SimpleNamespace(
+            config=config, universe=SimpleNamespace(tickers=["AAA"]), run=WindowRun("incremental", "known truth lineage clock", sessions[-1])
+        ),
+    )
     raw = pd.DataFrame({"ticker": ["AAA"], "as_of": pd.to_datetime(["2026-07-02"]), "board_size": [11.0], "accession_number": ["source-1"]})
-    rows = publication_rows(config, Tables.def14a_llm, raw, sessions, "as_of")
+    rows = point_in_time(raw, config, Tables.def14a_llm, sessions)
     state = _State(Tables.def14a_llm, Tables.cube_part_governance, rows, "board_size", fundamentals_to_daily(rows, "board_size", sessions))
     return context, state, sessions
 
@@ -82,13 +115,13 @@ def test_early_production_selection_is_a_finding() -> None:
     print("SANITY: an early production selector produces a high-severity finding even when its stored scalar value is unchanged.")
 
 
-def test_later_accepted_at_new_york_clock_is_independent() -> None:
+def test_other_raw_clocks_do_not_override_the_configured_source_column() -> None:
     context, _, sessions = _known_state()
-    row = pd.Series({"filing_date": "2026-07-01", "accepted_at": "2026-07-03T01:00:00Z"})
-    policy = dict(OmegaConf.to_container(publication_policy(context.config, Tables.sec13f_hr), resolve=True))
+    row = pd.Series({"filing_date": "2026-07-01", "accepted_at": "2026-08-01T01:00:00Z"})
+    policy = dict(OmegaConf.to_container(context.config.data.tables[Tables.sec13f_hr.name].pit, resolve=True))
     expected = expected_publication(policy, row, sessions)
     assert expected == pd.Timestamp("2026-07-06")
-    print("SANITY: later accepted evidence uses the New York day plus2 calendar days, then the actual retained market sessions.")
+    print("SANITY: filing_date plus two calendar days controls eligibility; preserved accepted_at evidence cannot silently override that column.")
 
 
 def test_selected_state_reaches_actual_assembly_and_bounded_writer(sqlite_store: object, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -236,10 +269,9 @@ def test_ftd_null_publication_barrier_is_source_evidence() -> None:
             "fails_quantity": [10.0, float("nan")],
         }
     )
-    lag = int(publication_policy(context.config, Tables.sec_fails_to_deliver_security).lag.value)
     settlement = raw.pivot(index="date", columns="ticker", values="fails_quantity").reindex(sessions)
-    daily = _publish_ftd_zip_states(settlement, raw, sessions, _ftd_available_dates(raw, lag))
-    rows = publication_rows(context.config, Tables.sec_fails_to_deliver_security, raw, sessions, "as_of")
+    rows = point_in_time(raw, context.config, Tables.sec_fails_to_deliver_security, sessions)
+    daily = _publish_ftd_zip_states(settlement, rows, sessions, rows.groupby("period")["as_of"].first().to_dict())
     state = _State(Tables.sec_fails_to_deliver_security, Tables.cube_part_institutionals, rows, "fails_quantity", daily)
     records, findings = _boundaries(context.config, context.universe.tickers, state, sessions)
     assert not findings and len(records) == 3 and len(_probe_rows(context, state, sessions)) == 3
@@ -280,13 +312,15 @@ def test_ftd_capture_uses_latest_global_served_row_even_when_absent() -> None:
     print("SANITY: FTD ancestry points to the actual latest global served session's NULL vector cell, never the last surviving positive ticker row.")
 
 
-def test_same_day_filing_policy_is_rejected() -> None:
+def test_explicit_zero_calendar_lag_is_not_an_implicit_default() -> None:
     context, _, sessions = _known_state()
-    policy = dict(OmegaConf.to_container(publication_policy(context.config, Tables.def14a_llm), resolve=True))
-    policy["lag"]["value"] = 0
-    with pytest.raises(ValueError, match="at least one"):
+    policy = dict(OmegaConf.to_container(context.config.data.tables[Tables.def14a_llm.name].pit, resolve=True))
+    policy["lag_days"] = 0
+    assert expected_publication(policy, {"as_of": "2026-07-02"}, sessions) == pd.Timestamp("2026-07-02")
+    del policy["lag_days"]
+    with pytest.raises(KeyError):
         expected_publication(policy, {"as_of": "2026-07-02"}, sessions)
-    print("SANITY: contradictory zero-lag filing policy cannot certify same-day source use.")
+    print("SANITY: an explicit zero lag is honored; an omitted configured lag remains a contract error.")
 
 
 def test_actual_wrong_newer_packet_id_fails_even_with_same_known_flag() -> None:
@@ -321,14 +355,13 @@ def test_actual_wrong_newer_packet_id_fails_even_with_same_known_flag() -> None:
     print("SANITY: actual newer accession chosen early fails even though both old/new packet-known values equal1.")
 
 
-def test_independent_configured_cd_session_oracle() -> None:
+def test_independent_rewrite_anchored_calendar_input_oracle() -> None:
     context, _, sessions = _known_state()
-    assert _move(pd.Timestamp("2026-07-06"), {"value": 2, "unit": "calendar_days"}, sessions) == pd.Timestamp("2026-07-04")
-    assert _move(pd.Timestamp("2026-07-06"), {"value": 2, "unit": "trading_sessions"}, sessions) == pd.Timestamp("2026-07-01")
+    assert _subtract_days(pd.Timestamp("2026-07-06"), 2) == pd.Timestamp("2026-07-04")
     name = Tables.cube_part_text.name
     item = context.config.data.tables[name]
-    item.start_date = "2026-07-01"
-    item.reprocess.overlap = {"value": 2, "unit": "calendar_days"}
+    item.overlap.days = 2
+    item.warmup[Tables.cube_part_prices.name] = 0
     plan = {
         "requested": {"start": "2026-07-01", "end": "2026-07-08"},
         "read": {"start": "2026-07-04", "end": "2026-07-08"},
@@ -338,6 +371,54 @@ def test_independent_configured_cd_session_oracle() -> None:
         "keys": {"ticker": ["AAA"]},
     }
     assert _check_part(context, name, plan, {"as_of": "2026-07-08", "tickers": ["AAA"]}, sessions).status == "pass"
+    item.warmup[Tables.cube_part_prices.name] = 2
+    plan["read"]["start"] = "2026-07-02"
+    assert _check_part(context, name, plan, {"as_of": "2026-07-08", "tickers": ["AAA"]}, sessions).status == "pass"
+    plan["read"]["start"] = "2026-07-06"
+    assert _check_part(context, name, plan, {"as_of": "2026-07-08", "tickers": ["AAA"]}, sessions).status == "fail"
+    item.warmup[Tables.cube_part_prices.name] = None
+    plan["read"]["start"] = "2026-07-01"
+    assert _check_part(context, name, plan, {"as_of": "2026-07-08", "tickers": ["AAA"]}, sessions).status == "pass"
     plan["write"]["start"] = "2026-07-02"
     assert _check_part(context, name, plan, {"as_of": "2026-07-08", "tickers": ["AAA"]}, sessions).status == "fail"
-    print("SANITY: independent CD/S oracle distinguishes calendar overlap across a US market holiday and rejects a changed production footprint.")
+    print(
+        "SANITY: independent calendar oracle distinguishes null/full, zero and rewrite-minus-days; a current-source anchor or changed write footprint fails."
+    )
+
+
+def test_independent_assembly_oracle_uses_observed_price_dates() -> None:
+    context, _, sessions = _known_state()
+    prices, text = Tables.cube_part_prices.name, Tables.cube_part_text.name
+    context.config.data_aggregate.assembly.compulsory_parts = [prices, text]
+    context.config.data_aggregate.assembly.optional_parts = []
+    context.config.data.tables.cube.warmup = {prices: 0, text: 0}
+    parts = {}
+    for name in (prices, text):
+        item = context.config.data.tables[name]
+        item.overlap.days = 2
+        parts[name] = {
+            "requested": {"start": "2026-07-01", "end": "2026-07-08"},
+            "write": {"start": "2026-07-04", "end": "2026-07-08"},
+            "read": {"start": "2026-07-01" if name == prices else "2025-04-10", "end": "2026-07-08"},
+            "frontier": "2026-07-06",
+            "mode": "incremental",
+            "keys": {"ticker": ["AAA"]},
+        }
+    assembly = {
+        "requested": {"start": "2026-07-01", "end": "2026-07-08"},
+        "write": {"start": "2026-07-02", "end": "2026-07-08"},
+        "read": {"start": "2026-07-02", "end": "2026-07-08"},
+        "frontier": "2026-07-02",
+        "mode": "incremental",
+        "keys": {"ticker": ["AAA"]},
+    }
+    replay = {
+        "sessions": sessions,
+        "planning": {"parts": parts, "assembly": assembly, "selected_components": [prices, text], "as_of": "2026-07-08", "tickers": ["AAA"]},
+    }
+    assert all(result.status == "pass" for result in check_window_plans(context, replay).values())
+    assembly["requested"]["start"] = "2026-07-02"
+    assert check_window_plans(context, replay)[Tables.cube.name].status == "fail"
+    print(
+        "SANITY: assembly derives its first possible output from observed prices, inherits selected writes and catches up its older frontier; a fabricated cube floor fails."
+    )

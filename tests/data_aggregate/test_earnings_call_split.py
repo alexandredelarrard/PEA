@@ -10,6 +10,9 @@ from omegaconf import DictConfig, OmegaConf
 
 from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.data_aggregate.utils.text import earnings_call_features as ec
+from src.data_store.schema import Tables
+from src.utils.publication import point_in_time
+from tests.support.config import fixture_config
 
 
 def test_embedding_kpis_are_part_of_the_unified_contract() -> None:
@@ -17,7 +20,10 @@ def test_embedding_kpis_are_part_of_the_unified_contract() -> None:
     assert retained_embedding_kpis <= set(EARNINGS_CALL_FEATURES)
     assert len(EARNINGS_CALL_FEATURES) == 10
     calls = pd.DataFrame({"ticker": ["A"], "quarter": ["2024Q1"], "as_of": ["2024-05-01"], "ec_prep_tone": [0.1]})
-    panel = ec.build_earnings_call_feature_panel(calls, pd.bdate_range("2024-05-01", "2024-08-31"), availability_lag_days=2, signal_sessions=66)
+    calendar = pd.bdate_range("2024-05-01", "2024-08-31")
+    config = fixture_config(data={"tables": {Tables.earnings_call_sections.name: {"pit": {"lag_days": 2}}}})
+    prepared = point_in_time(calls, config, Tables.earnings_call_sections, calendar)
+    panel = ec.build_earnings_call_feature_panel(prepared, calendar, signal_sessions=66)
     assert set(panel.columns) == {"date", "ticker", *[f"f_{name}" for name in EARNINGS_CALL_FEATURES]}
     assert not any(name.endswith(("_xs", "_vs_peers")) for name in EARNINGS_CALL_FEATURES)
     print("\n=== SANITY CHECK: unified earnings-call contract ===")

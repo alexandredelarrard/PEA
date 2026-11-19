@@ -27,7 +27,7 @@ from src.data_aggregate.utils.common.panel import build_peer_relative_panel
 from src.data_aggregate.utils.common.xs import xs_z
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Table, Tables
-from src.utils.publication import publication_dates
+from src.utils.publication import point_in_time
 
 #: Trailing window in trading days (about six calendar months).
 COUNT_WINDOW = 126
@@ -140,7 +140,8 @@ def _subject_side(df_filings: pd.DataFrame, identity: SubjectIdentity) -> pd.Ser
 
 def _visible_day(day: pd.Timestamp, table: Table, idx: pd.DatetimeIndex, config: DictConfig) -> pd.Timestamp:
     """The actual retained publication session of a source date."""
-    return publication_dates(config, table, pd.DataFrame({"filing_date": [day]}), idx).iloc[0]
+    ready = point_in_time(pd.DataFrame({"filing_date": [day]}), config, table, idx)
+    return pd.NaT if ready.empty else ready["as_of"].iloc[0]
 
 
 def _filing_counts(df_filings: pd.DataFrame, idx: pd.DatetimeIndex, columns: pd.Index) -> pd.DataFrame:
@@ -193,12 +194,15 @@ def build_ownership_feature_panel(
         name = names[table]
         if _absent(df_schedule, {"ticker", "accession_number", "filing_date"}) or df_schedule is None:
             continue
-        df_filings = _filings(df_schedule, identity)
+        df_ready = point_in_time(df_schedule, config, table, idx)
+        df_filings = _filings(df_ready, identity)
         if df_filings.empty:
             continue
 
-        # Everything downstream reads the publication session of a filing, not its filing date.
-        df_filings["filing_date"] = publication_dates(config, table, df_filings, idx)
+        # Preserve dated identity filtering, then count only from the prepared source session.
+        public = df_ready.groupby(["ticker", "accession_number"], as_index=False)["as_of"].min()
+        df_filings = df_filings.drop(columns="filing_date").merge(public, on=["ticker", "accession_number"], validate="one_to_one")
+        df_filings["filing_date"] = df_filings.pop("as_of")
         df_counts = _filing_counts(df_filings, idx, columns)
 
         # Outside the proven source coverage an absent filing is unknown, not zero.

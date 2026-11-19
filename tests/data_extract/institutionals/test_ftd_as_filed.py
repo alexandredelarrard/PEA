@@ -176,8 +176,8 @@ def test_new_ftd_units_leave_completed_history_for_explicit_bounded_recovery(sql
     ]
     suffix = stored.loc[stored.period.eq("202602a")].reset_index(drop=True)
     item = context.config.data.tables.sec_fails_to_deliver_security
-    item.start_date, item.end_date = "2026-01-01", "2026-01-31"
-    context.run = WindowRun("full", "explicit bounded FTD scope repair", context.run.instant)
+    item.start_date = "2026-01-01"
+    context.run = WindowRun("full", "explicit bounded FTD scope repair", pd.Timestamp("2026-01-31"))
     ftd.fetch_fails_to_deliver(context)
     assert reads == ["202601a", "202601b"]
     rebuilt = _stored(sqlite_store)

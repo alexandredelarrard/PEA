@@ -29,6 +29,7 @@ from src.data_aggregate.utils.price.features import security_basis_frame
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.utils.price.adjustments import ShareBasis
 from tests.data_aggregate.fundamental_pit_reference import legacy_daily_market_cap as daily_market_cap
+from tests.support.config import fixture_config
 
 _EMPTY_EVENTS = pd.DataFrame(columns=["ticker", "date", "value"])
 _NO_SPLIT_FIXTURE = ShareBasis(_EMPTY_EVENTS, _EMPTY_EVENTS, _EMPTY_EVENTS, {})
@@ -59,7 +60,9 @@ def build_prepared_insider_panel(
     df_source = source_frame(insider) if insider is not None else pd.DataFrame()
     if lag_days and not df_source.empty:
         first = df_source["filing_date"].groupby(df_source["ticker"]).min()
-        df_source = lag_insider_source(InsiderSource(df_source, None, first), lag_days, pd.DatetimeIndex(frames.trading_index)).transactions
+        config = fixture_config()
+        config.data.tables.insider_transactions.pit.lag_days = lag_days
+        df_source = lag_insider_source(InsiderSource(df_source, None, first), config, pd.DatetimeIndex(frames.trading_index)).transactions
     df_trades, diagnostics = clean_transactions(
         df_source,
         df_valuation_close=df_valuation_close,

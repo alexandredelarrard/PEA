@@ -13,7 +13,6 @@ from src.data_aggregate.utils.institutionals.frontiers import schedule_complete_
 from src.data_aggregate.utils.institutionals.ownership_features import ScheduleSource, build_ownership_feature_panel
 from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp, marker_row
 from src.data_store.schema import Table, Tables
-from src.utils.freshness import max_age_days
 from src.utils.window import WindowRun
 from tests.conftest import make_frames
 from tests.support.config import fixture_config
@@ -26,17 +25,18 @@ def _rules() -> InstitutionalAvailability:
 def test_config_inherits_table_dates_and_applies_field_and_derived_overrides() -> None:
     rules = _rules()
 
-    assert rules.source_date(Tables.insider_transactions) == pd.Timestamp("2006-01-03")
-    assert rules.source_date(Tables.insider_transactions, "filing_date") == pd.Timestamp("2006-01-03")
-    assert rules.derived_date("ic_shortvol_high_x_weak_price", []) == pd.Timestamp("2019-02-14")
-    assert "ic_inst_flow_to_mcap" not in rules.derived_features
+    assert rules.source_date(Tables.insider_transactions) == pd.Timestamp("2006-01-01")
+    assert rules.source_date(Tables.insider_transactions, "filing_date") == pd.Timestamp("2006-01-01")
+    assert rules.derived_date("ic_shortvol_high_x_weak_price", [(Tables.sec_short_volume_security, None)]) == pd.Timestamp("2018-08-01")
+    with pytest.raises(KeyError):
+        rules.derived_date("ic_shortvol_high_x_weak_price", [])
 
     print("\n=== SANITY CHECK: compact availability inheritance ===")
     print("  Active derived features resolve their boundaries and retired features have no stale availability entry. Validated.")
 
 
 def test_source_mask_is_inclusive_and_combines_per_cell_requirements() -> None:
-    rules = InstitutionalAvailability(tables={Tables.insider_transactions.name: pd.Timestamp("2023-04-01")}, derived_features={})
+    rules = InstitutionalAvailability(tables={Tables.insider_transactions.name: pd.Timestamp("2023-04-01")})
     idx = pd.date_range("2023-03-31", periods=3, freq="D")
     columns = pd.Index(["AAA", "BBB"], name="ticker")
     denominator = pd.DataFrame([[True, True], [True, False], [True, True]], index=idx, columns=columns)
@@ -101,19 +101,16 @@ def test_schedule_frontier_reaches_the_last_session_within_the_overlap(sqlite_st
     last = pd.Timestamp("2026-09-11")
     config = fixture_config()
     context = SimpleNamespace(store=sqlite_store, config=config, run=WindowRun("incremental", "fixed source frontier", last))
-    tolerance = max_age_days(config, Tables.sec_13g)
-    stale_day = last - pd.Timedelta(days=tolerance + 3)
-    fresh_day = last - pd.Timedelta(days=tolerance)
+    stale_day = last - pd.Timedelta(days=10)
+    fresh_day = last - pd.Timedelta(days=7)
     assert schedule_complete_through(context, Tables.sec_13g, last) is None
     sqlite_store.save(Tables.sec_13g, _schedule_rows(Tables.sec_13g, [("AAA", "g1", stale_day, "1")]))
     assert schedule_complete_through(context, Tables.sec_13g, last) == stale_day
     sqlite_store.save(Tables.sec_13g, _marker(Tables.sec_13g, "BBB", "m1", fresh_day))
-    assert schedule_complete_through(context, Tables.sec_13g, last) == last
+    assert schedule_complete_through(context, Tables.sec_13g, last) == fresh_day
     assert schedule_complete_through(context, Tables.sec_13g, None) == fresh_day
     assert len(cast(pd.DataFrame, sqlite_store.load(Tables.sec_13g))) == 1
-    print(
-        f"SANITY: source completeness uses the configured{tolerance}-calendar-day freshness tolerance, including real empty-filing markers; it is separate from extraction overlap."
-    )
+    print("SANITY: actual stored filing/marker dates prove completion; recent source age cannot extend known zeros to a later session.")
 
 
 def test_db_frontier_only_turns_nan_into_zero_inside_it(sqlite_store) -> None:
@@ -155,7 +152,9 @@ def test_db_frontier_only_turns_nan_into_zero_inside_it(sqlite_store) -> None:
     old, new = build(None, None), build(frontier_13d, frontier_13g)
     columns = sorted(set(old.columns) | set(new.columns))
     old, new = old.reindex(columns=columns), new.reindex(columns=columns)
-    frontier = pd.Series([frontier_13d if c.startswith("f_ic_act_") else frontier_13g for c in columns], index=columns)
+    assert frontier_13d == idx[-4] and frontier_13g == idx[-2]
+    # The declared one-calendar-day lag rolls these actual filing dates to the next fixture session.
+    frontier = pd.Series([idx[-3] if c.startswith("f_ic_act_") else idx[-1] for c in columns], index=columns)
     inside = pd.DataFrame({c: new.index.get_level_values("date") <= frontier[c] for c in columns}, index=new.index)
     same = old.eq(new) | (old.isna() & new.isna())
     nan_to_zero = old.isna() & new.eq(0.0)
@@ -176,9 +175,11 @@ def test_db_frontier_only_turns_nan_into_zero_inside_it(sqlite_store) -> None:
 def test_invalid_availability_declarations_fail_fast(case: str) -> None:
     config = fixture_config()
     if case == "invalid-coverage":
-        config.data.tables.insider_transactions.coverage_start = "not-a-date"
+        config.data.tables.insider_transactions.start_date = "not-a-date"
     else:
-        config.data.derived_feature_starts["not_a_feature"] = "2020-01-01"
+        with pytest.raises(KeyError):
+            InstitutionalAvailability.from_config(config).derived_date("not_a_feature", [(Tables.sec_13g, None)])
+        return
     with pytest.raises(ValueError if case == "invalid-coverage" else KeyError):
         InstitutionalAvailability.from_config(config)
     print("SANITY: malformed coverage and unknown derived features fail before feature construction.")
@@ -200,7 +201,7 @@ def test_missing_coverage_clocks_never_become_today() -> None:
 
 def test_future_source_coverage_does_not_become_the_last_price_session() -> None:
     config = fixture_config()
-    config.data.tables.sec_13g.coverage_start = "2027-01-01"
+    config.data.tables.sec_13g.start_date = "2027-01-01"
     dates = pd.bdate_range("2026-09-01", periods=10)
     rows = _schedule_rows(Tables.sec_13g, [("AAA", "g1", dates[0], "1")])
     frames = make_frames(dates, {}, close_split=pd.DataFrame({"AAA": 100.0, "BBB": 100.0}, index=dates))

@@ -1,4 +1,4 @@
-"""Source-level freshness contract for the cube status gate."""
+"""Actual price support and exact cube-part alignment for the status gate."""
 
 from __future__ import annotations
 
@@ -11,14 +11,13 @@ import pytest
 
 from src.context import Context
 from src.data_aggregate.utils.common.part_status import (
-    _insider_source_status,
     cube_part_edge_report,
     part_status_report,
 )
 from src.data_aggregate.utils.common.parts import CUBE_PARTS, TERMINAL_TABLES
 from src.data_store.schema import Tables
-from src.data_store.store import DataStore
-from tests.data_extract.fake_context import extract_config
+from src.utils.window import WindowRun
+from tests.support.config import fixture_config
 from tests.support.universe import universe_of
 
 LOG = logging.getLogger(__name__)
@@ -26,75 +25,11 @@ SOURCE = "cube_part_institutionals:insider_transactions"
 
 
 def _context(store: Any) -> Any:
-    config = extract_config(source_freshness={"insider_max_lag_days": 4})
+    config = fixture_config()
     config.data_aggregate = {"assembly": {"optional_parts": [Tables.cube_part_text.name, Tables.cube_part_institutionals.name]}}
-    return SimpleNamespace(store=store, config=config, log=LOG, universe=universe_of(["AAA"]))
-
-
-def _seed_prices(sqlite_store: DataStore) -> None:
-    sqlite_store.replace(
-        Tables.cube_part_prices,
-        pd.DataFrame(
-            {
-                "date": [pd.Timestamp("2026-09-03"), pd.Timestamp("2026-09-04"), pd.Timestamp("2026-09-04")],
-                "ticker": ["AAA", "AAA", "BBB"],
-            }
-        ),
+    return SimpleNamespace(
+        store=store, config=config, log=LOG, universe=universe_of(["AAA"]), run=WindowRun("incremental", "part alignment", pd.Timestamp("2026-09-04"))
     )
-
-
-def _seed_insider(sqlite_store: DataStore, filing_date: str) -> None:
-    """One stored insider empty-filing marker (no fetched_at) filed on `filing_date`."""
-    sqlite_store.save(
-        Tables.insider_transactions,
-        pd.DataFrame(
-            {
-                "accession_number": ["a1"],
-                "security_type": "_empty",
-                "row_sequence": 0,
-                "ticker": ["AAA"],
-                "filing_date": [pd.Timestamp(filing_date)],
-                "source": ["edgar"],
-            }
-        ),
-    )
-
-
-def test_a_filing_on_the_reference_date_makes_the_source_current(sqlite_store: DataStore) -> None:
-    _seed_prices(sqlite_store)
-    _seed_insider(sqlite_store, "2026-09-04")
-
-    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", "2026-09-03", tolerance_days=4)
-
-    assert status == {
-        "complete_through": "2026-09-04",
-        "reference_price_date": "2026-09-04",
-        "part_max_date": "2026-09-03",
-        "lag_days": 0,
-        "tolerance_days": 4,
-        "ok": True,
-    }
-    print("SANITY: D = 2026-09-04 (a marker without fetched_at) equals the reference price date: lag 0, ok.")
-
-
-def test_a_frontier_five_days_behind_fails_a_four_day_tolerance(sqlite_store: DataStore) -> None:
-    _seed_prices(sqlite_store)
-    _seed_insider(sqlite_store, "2026-08-30")
-
-    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", "2026-09-04", tolerance_days=4)
-
-    assert status["complete_through"] == "2026-08-30" and status["lag_days"] == 5 and status["ok"] is False
-    print("SANITY: D 5 days behind the reference price date fails the 4-day tolerance.")
-
-
-def test_an_empty_insider_table_cannot_make_the_source_current(sqlite_store: DataStore) -> None:
-    _seed_prices(sqlite_store)
-
-    status = _insider_source_status(cast(Context, _context(sqlite_store)), "2026-09-04", "2026-09-04", tolerance_days=4)
-
-    assert status["complete_through"] is None and status["lag_days"] is None and status["ok"] is False
-    assert status["reason"] == "insider_transactions is absent or empty"
-    print(f"SANITY: with no stored insider row the frontier is unknown, the gate is red, reason: {status['reason']!r}.")
 
 
 class _ReportStore:
@@ -171,13 +106,10 @@ def test_cube_part_edges_require_exact_price_alignment():
     assert edge["parts"][missing]["status"] == "skipped"
     assert set(edge["misaligned"]) == {one_day_behind, one_day_ahead}
     print("\n=== SANITY CHECK: exact cube-part price-edge alignment ===")
-    print(
-        "  a one-day lag fails, a one-day lead fails, and an absent optional part skips; the shared "
-        "four-day source-freshness tolerance is not applied to cube parts. Validated."
-    )
+    print("  a one-day lag fails, a one-day lead fails, and an absent optional part skips. Validated.")
 
 
-def test_full_status_keeps_the_dag_contract_and_adds_source_detail():
+def test_full_status_keeps_the_dag_contract_without_source_age_gates():
     context = _context(_ReportStore(insider_date="2026-08-20"))
 
     report = part_status_report(cast(Context, context))
@@ -194,13 +126,10 @@ def test_full_status_keeps_the_dag_contract_and_adds_source_detail():
         "misaligned",
     }.issubset(report)
     assert set(report["parts"]) == expected_parts
-    assert not report["ok"]
-    assert SOURCE in report["behind"]
-    insider = report["sources"]["cube_part_institutionals"]["insider_transactions"]
-    assert insider["complete_through"] == "2026-08-20" and insider["lag_days"] == 15
+    assert report["ok"] and SOURCE not in report["behind"]
+    assert Tables.cube_part_institutionals.name not in report["sources"]
     print(
-        "SANITY: the DAG's ok/behind/parts/max_date contract is unchanged, and an insider frontier D 15 days behind "
-        "the reference price date names the insider source in `behind`."
+        "SANITY: the DAG's ok/behind/parts/max_date contract is retained; a 15-day-old insider frontier does not impose an undeclared source-age gate."
     )
 
 
@@ -226,7 +155,7 @@ def test_optional_absence_skips_dependent_source_gate(empty: bool) -> None:
     report = part_status_report(_context(store))
     assert report["ok"] and report["behind"] == []
     assert all(report["parts"][name]["edge_status"] == "skipped" for name in optional)
-    assert report["sources"][Tables.cube_part_institutionals.name]["insider_transactions"]["status"] == "skipped"
+    assert Tables.cube_part_institutionals.name not in report["sources"]
     print("SANITY: absent/empty optional parts and their inapplicable insider check cannot make readiness red.")
 
 

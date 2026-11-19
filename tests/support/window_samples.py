@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -12,11 +13,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
 
+import pandas as pd
 import pytest
+from omegaconf import DictConfig, OmegaConf
 
 from src.context import Context, get_config_context
+from src.data_aggregate.utils.common.incremental import plan_window
+from src.data_aggregate.utils.common.inputs import input_windows
 from src.data_store.schema import ALL, KIND_PART, Table, Tables
 from src.utils.config import read_config
+from src.utils.window import Window
 from src.validate.checks.window_sample import SampleSelection, capture_window_selection, check_window_sample, timing_sample_tables
 from src.validate.result import CheckResult, jsonable
 
@@ -48,6 +54,7 @@ class WindowSamples:
     results: dict[str, Any] = field(default_factory=dict)
     lineage: dict[str, Any] = field(default_factory=dict)
     planning: dict[str, Any] = field(default_factory=dict)
+    identity: dict[str, Any] = field(default_factory=dict)
 
     def publish(self) -> None:
         # Save partial evidence atomically after each completed table; the watchdog never writes.
@@ -58,6 +65,7 @@ class WindowSamples:
             "tables": self.results,
             "lineage": self.lineage,
             "planning": self.planning,
+            "identity": self.identity,
         }
         reports = [(self.out / "samples.json", payload)]
         if self.capturing:
@@ -172,7 +180,9 @@ def window_sample_session(path: Path, out: Path, capturing: bool, started: float
         raise pytest.UsageError("The configured complete sample budget must be positive")
     # Enforce read-only PostgreSQL at connection level; public producer tests use SQLite.
     previous = os.environ.get("PGOPTIONS")
-    os.environ["PGOPTIONS"] = f"{previous or ''} -c default_transaction_read_only=on -c statement_timeout={int(budget * 1000)}"
+    os.environ["PGOPTIONS"] = (
+        f"{previous or ''} -c default_transaction_read_only=on -c default_transaction_isolation=serializable -c statement_timeout={int(budget * 1000)}"
+    )
     run = WindowSamples(
         None,
         path,
@@ -204,10 +214,43 @@ def window_sample_session(path: Path, out: Path, capturing: bool, started: float
             raise ValueError("Capture refuses to overwrite a pinned baseline; reuse --window-baseline")
         if not capturing:
             run.manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        run.identity = _sample_identity(config, None if capturing else manifest_path)
         run.publish()
         _, run.context = get_config_context("configs", use_cache=True, save=False)
         yield run
         run.publish()
+
+
+def _sample_identity(config: DictConfig, manifest: Path | None) -> dict[str, Any]:
+    """Record current pipeline policy beside immutable source pins, without rewriting historical metadata."""
+    policy = {name: OmegaConf.to_container(config[name], resolve=True) for name in ("data", "data_extract", "data_aggregate")}
+    root = Path(__file__).resolve().parents[2]
+    code = hashlib.sha256()
+    paths = [
+        *(root / "src").rglob("*.py"),
+        *[
+            root / "tests" / "support" / name
+            for name in ("window_samples.py", "window_lineage.py", "window_lineage_sources.py", "run_window_samples.py")
+        ],
+    ]
+    for path in sorted(paths):
+        code.update(path.relative_to(root).as_posix().encode("utf-8") + b"\0" + path.read_bytes() + b"\0")
+    encoded = json.dumps(policy, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    return {
+        "pipeline_code_sha256": code.hexdigest(),
+        "pipeline_configuration_sha256": hashlib.sha256(encoded).hexdigest(),
+        "pipeline_configuration": policy,
+        "source_manifest_sha256": None if manifest is None else hashlib.sha256(manifest.read_bytes()).hexdigest(),
+        "policy_scope": "Current extraction, cube input history and source publication rules; historical source manifest remains immutable",
+    }
+
+
+def cube_input_windows(context: Context, part: Table, sessions: pd.DatetimeIndex) -> dict[Table, Window | None]:
+    """Reuse the actual producer's plan and declared payload scopes for source-state replay."""
+    plan = plan_window(context, part, sessions)
+    if plan is None:
+        raise ValueError(f"{part.name}: no applicable actual producer window for source replay")
+    return input_windows(context, part, plan.write)
 
 
 def assert_lineage_results(results: dict[str, CheckResult], planning: dict[str, Any]) -> None:

@@ -30,6 +30,7 @@ from src.data_store.store import DataStore
 from src.utils.config import read_config
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.price.adjustments import ShareBasis
+from src.utils.window import Window
 from tests.canonical_schema import create_canonical
 from tests.conftest import make_frames
 from tests.data_aggregate import sec_thirteen_legacy_reference as _mod
@@ -45,6 +46,7 @@ from tests.data_aggregate.sec_thirteen_legacy_reference import LEGACY_F13_SETTLE
 from tests.data_aggregate.sec_thirteen_legacy_reference import _quarter_features as _qf
 from tests.data_aggregate.sec_thirteen_legacy_reference import build_institutional_feature_panel as _panel
 from tests.data_aggregate.sec_thirteen_legacy_reference import clean_holdings as _clean_holdings
+from tests.data_aggregate.sec_thirteen_read_windows import read_windows
 
 LAG = pd.Timedelta(days=45)
 
@@ -1105,7 +1107,11 @@ def test_production_first_publication_uses_immutable_matched_cohorts(sqlite_stor
         security_basis=basis,
     )
     resources = SecThirteenResources(
-        frames, None, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]})), {}
+        frames,
+        None,
+        CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame({"cusip": ["111111111"], "ticker": ["AAA"]})),
+        {},
+        windows=read_windows(Window(frames.trading_index[0], frames.trading_index[-1])),
     )
 
     def panel() -> pd.DataFrame | None:

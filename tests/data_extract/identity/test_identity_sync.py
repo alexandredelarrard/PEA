@@ -136,7 +136,8 @@ def test_identity_repairs_respect_each_table_clock_and_dates(sqlite_store: DataS
     context = _context(sqlite_store, tmp_path)
     context.run = WindowRun("incremental", "bounded identity repairs", pd.Timestamp("2026-11-16"))
     item = context.config.data.tables[table.name]
-    item.start_date, item.end_date = "2026-06-01", "2026-09-30"
+    item.start_date = "2026-06-01"
+    context.run = WindowRun("incremental", "bounded identity repairs", pd.Timestamp("2026-09-30"))
     dates = pd.to_datetime(["2026-05-01", "2026-07-01", "2026-11-01", "2026-07-01"])
     spec = PURGE_TABLES_BY_NAME[table.name]
     rows = pd.DataFrame({"ticker": ["AAA", "AAA", "AAA", "BBB"], "cik": "0000099999", spec.key_col: ["old", "inside", "future", "other"]})
@@ -179,7 +180,8 @@ def test_archive_identity_repair_keeps_other_period_rows_at_the_same_filing(sqli
     context = _context(sqlite_store, tmp_path)
     context.run = WindowRun("incremental", "exact archive repair keys", pd.Timestamp("2026-11-16"))
     item = context.config.data.tables[Tables.notes_num.name]
-    item.start_date, item.end_date = "2026-06-01", "2026-09-30"
+    item.start_date = "2026-06-01"
+    context.run = WindowRun("incremental", "bounded archive identity repairs", pd.Timestamp("2026-09-30"))
     rows = pd.DataFrame(
         {
             "ticker": "AAA",

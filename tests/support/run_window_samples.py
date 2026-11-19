@@ -8,6 +8,7 @@ check. There is no budget, sample-size or preparation override.
 from __future__ import annotations
 
 import argparse
+import sys
 import time
 from pathlib import Path
 
@@ -15,9 +16,11 @@ _PROCESS_STARTED = time.perf_counter()
 
 # These are module-level bootstrap imports: their cost belongs to this deadline.
 from src.validate.checks.window_sample import timing_sample_tables  # noqa: E402
-from tests import live_guard  # noqa: E402
+from tests import live_guard as _package_guard  # noqa: E402
 from tests.support.window_lineage import measure_window_lineage  # noqa: E402
 from tests.support.window_samples import assert_lineage_results, window_sample_session  # noqa: E402
+
+live_guard = sys.modules.get("live_guard", _package_guard)
 
 
 def main() -> int:

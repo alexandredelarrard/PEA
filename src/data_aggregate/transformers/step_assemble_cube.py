@@ -12,7 +12,7 @@ from src.context import Context
 from src.data_aggregate.utils.common.assembly import part_has_rows
 from src.data_aggregate.utils.common.frames import downcast_float32, normalize_date_col
 from src.data_aggregate.utils.common.incremental import plan_window, write_part
-from src.data_aggregate.utils.common.inputs import load_source
+from src.data_aggregate.utils.common.inputs import input_windows, load_source
 from src.data_aggregate.utils.common.panel_merge import PANEL_KEYS, PanelMerger
 from src.data_aggregate.utils.common.part_status import cube_part_edge_report
 from src.data_aggregate.utils.common.parts import part_for
@@ -38,7 +38,7 @@ class StepAssembleCube(Step):
         window = self._plan_window(written)
         if window is None:
             return {}
-        cube, labels = self._assemble(window.read)
+        cube, labels = self._assemble(window.write)
         self._persist(cube, window)
         self._report(cube, labels)
         return {Tables.cube: window}
@@ -47,9 +47,11 @@ class StepAssembleCube(Step):
         calendar = load_trading_calendar(self._context)
         assembly = self._cfg.assembly
         selected = {resolve(name) for name in [*assembly.compulsory_parts, *assembly.optional_parts]}
+        if set(self._config.data.tables.cube.warmup) != {table.name for table in selected}:
+            raise ValueError("Assembly selected parts and cube input warmup declarations must agree")
         starts = []
         for table in sorted(selected, key=lambda value: value.name):
-            policy = window_policy(self._config, table, self._context.run.as_of)
+            policy = window_policy(self._config, table, self._context.run.as_of, calendar)
             if policy is None:
                 continue
             if table.name in assembly.optional_parts and not part_has_rows(self._store, table, {"ticker": self._universe.tickers}):
@@ -70,7 +72,8 @@ class StepAssembleCube(Step):
         assembly = self._cfg.assembly
         optional = set(assembly.optional_parts)
         selected = assembly.get("columns") or {}
-        root = self._load_root(window)
+        reads = input_windows(self._context, Tables.cube, window)
+        root = self._load_root(reads[Tables.cube_part_prices])
         merger = PanelMerger(anchor=root[PANEL_KEYS])
         merger.add(root, Tables.cube_part_prices.name)
         labels: list[str] = []
@@ -78,7 +81,7 @@ class StepAssembleCube(Step):
             table = resolve(name)
             if table == Tables.cube_part_prices:
                 continue
-            panel = self._read_part(table, selected.get(name), window, optional=name in optional)
+            panel = self._read_part(table, selected.get(name), reads[table], optional=name in optional)
             if panel is None:
                 continue
             if panel.empty:
@@ -102,7 +105,7 @@ class StepAssembleCube(Step):
                 detail["refresh_command"],
             )
 
-    def _load_root(self, window: Window) -> pd.DataFrame:
+    def _load_root(self, window: Window | None) -> pd.DataFrame:
         """The price grid (float64: raw prices stay exact) with the peer basket and GICS codes attached."""
         # The quantity-conversion inputs stay in the price part; the cube keeps the price fields it always carried.
         columns = [column for column in self._store.columns(Tables.cube_part_prices) if column not in {"security_basis", "volume_pit"}]
@@ -116,13 +119,9 @@ class StepAssembleCube(Step):
         root["peers"] = root["ticker"].map(peer_json)
         return self._universe.gics_codes(root)
 
-    def _read_part(self, table: Table, columns: Sequence[str] | None, window: Window, *, optional: bool) -> pd.DataFrame | None:
+    def _read_part(self, table: Table, columns: Sequence[str] | None, window: Window | None, *, optional: bool) -> pd.DataFrame | None:
         """One part projected on its configured columns (all when None/empty), float32 payload."""
         store = self._store
-        policy = window_policy(self._config, table, self._context.run.as_of)
-        if policy is None:
-            return None
-        retained = window.intersection(policy.requested)
         command = part_for(table).command
         if not part_has_rows(store, table, {"ticker": self._universe.tickers}):
             if optional:
@@ -135,12 +134,15 @@ class StepAssembleCube(Step):
         missing = sorted(set(wanted) - set(actual))
         if missing:
             raise ValueError(f"{table.name} missing columns {missing}; run {command}")
-        if retained is None:
-            return pd.DataFrame(columns=wanted)
         chunks = [
             downcast_float32(chunk)
             for chunk in store.iter_load(
-                table, columns=wanted, chunksize=_CHUNK_ROWS, where={"ticker": self._universe.tickers}, since=retained.start, until=retained.end
+                table,
+                columns=wanted,
+                chunksize=_CHUNK_ROWS,
+                where={"ticker": self._universe.tickers},
+                since=None if window is None else window.start,
+                until=self._context.run.as_of if window is None else window.end,
             )
         ]
         return pd.concat(chunks, ignore_index=True) if chunks else pd.DataFrame(columns=wanted)

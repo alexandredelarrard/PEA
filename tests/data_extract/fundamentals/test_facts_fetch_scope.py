@@ -18,6 +18,7 @@ from src.data_extract.utils.fundamentals.fetch_fundamentals_sec import SEC_FUNDA
 from src.data_extract.utils.fundamentals.kpi_catalogue import Catalogue
 from src.data_store.schema import Resume, Tables
 from tests.data_extract.edgar_fixtures import fake_context, roster_run, seed_index
+from tests.data_extract.fake_context import extract_config
 from tests.support.universe import seed_universe
 
 CONFIG_DIR = Path(__file__).resolve().parents[3] / "configs"
@@ -50,10 +51,11 @@ def test_entering_the_run_scope_binds_the_catalogue_and_the_universe_gics(sqlite
 def test_the_facts_contract_lists_originals_only_from_2009() -> None:
     resume = cast(Resume, Tables.sec_fundamentals_facts.resume)
 
-    assert resume.forms == ("10-K", "10-Q") and resume.source_start == "2009-04-15"
+    start = extract_config().data.tables.sec_fundamentals_facts.start_date
+    assert resume.forms == ("10-K", "10-Q") and start == "2009-04-15"
     assert facts._ANNUAL_FORMS == ("10-K",), "the note-only guard follows the resume forms"
     print("\n=== SANITY CHECK: facts forms ===")
-    print(f"  forms {resume.forms}, source start {resume.source_start}, annual forms {facts._ANNUAL_FORMS}; no /A form is listed. Validated.")
+    print(f"  forms {resume.forms}, configured source start {start}, annual forms {facts._ANNUAL_FORMS}; no /A form is listed. Validated.")
 
 
 def test_plan_fetch_on_the_constant_lists_the_original_filings(tmp_path: Path, sqlite_store: Any) -> None:

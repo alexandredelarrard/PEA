@@ -56,24 +56,16 @@ class InstitutionalAvailability:
     """
 
     tables: Mapping[str, pd.Timestamp]
-    derived_features: Mapping[str, pd.Timestamp]
 
     @classmethod
     def from_config(cls, config: DictConfig) -> InstitutionalAvailability:
-        """Read table coverage and derived boundaries from the canonical data policy."""
+        """Keep extraction starts separate from observed support and publication eligibility."""
         tables = {
-            str(name): _date(item.coverage_start, f"{name}.coverage_start")
-            for name, item in config.data.tables.items()
-            if item.get("coverage_start") is not None
+            str(name): _date(item.start_date, f"{name}.start_date") for name, item in config.data.tables.items() if item.get("start_date") is not None
         }
-        derived = {}
-        for feature, value in config.data.derived_feature_starts.items():
-            if feature not in _DERIVED_FEATURES:
-                raise KeyError(f"Unknown institutionals derived feature {feature!r}")
-            derived[str(feature)] = _date(value, f"derived_feature_starts.{feature}")
         if not tables:
-            raise ValueError("data.yml declares no source coverage starts")
-        return cls(tables=tables, derived_features=derived)
+            raise ValueError("data.yml declares no extraction starts")
+        return cls(tables=tables)
 
     def source_date(self, table: Table, field: str | None = None) -> pd.Timestamp:
         """The configured coverage start; field identities remain validated against the schema."""
@@ -92,10 +84,7 @@ class InstitutionalAvailability:
         """Resolve an explicit derived override or the latest dependency boundary."""
         if feature not in _DERIVED_FEATURES:
             raise KeyError(f"Unknown institutionals derived feature {feature!r}")
-        override = self.derived_features.get(feature)
         starts = [self.source_date(table, field) for table, field in dependencies]
-        if override is not None:
-            starts.append(override)
         if not starts:
             raise KeyError(f"No availability override or dependencies declared for derived feature {feature!r}")
         return max(starts)

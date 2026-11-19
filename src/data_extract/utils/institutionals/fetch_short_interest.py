@@ -31,6 +31,7 @@ from src.data_extract.utils.common.identity_store import load_stored_lineage
 from src.data_extract.utils.common.resume import source_plan
 from src.data_extract.utils.common.security_lines import in_window, symbol_windows
 from src.data_store.schema import Tables
+from src.utils.data_policy import overlap_column, window_policy
 from src.utils.security_series import finra_key
 from src.utils.string import squash
 
@@ -140,7 +141,11 @@ def _fetch_day(
 
 def _plan_days(context: Context) -> pd.DatetimeIndex:
     """Enumerate provider day units inside the shared configured source Window."""
-    latest = context.store.max_date(Tables.sec_short_volume_security)
+    policy = window_policy(context.config, Tables.sec_short_volume_security, context.run.as_of)
+    if policy is None:
+        return pd.DatetimeIndex([])
+    column = overlap_column(context.config, Tables.sec_short_volume_security)
+    latest = context.store.max_date(Tables.sec_short_volume_security, column, where={column: policy.requested})
     plan = source_plan(context, Tables.sec_short_volume_security, latest, (("source", ("finra",)),))
     return pd.DatetimeIndex([]) if plan is None else pd.bdate_range(plan.write.start, plan.write.end)
 

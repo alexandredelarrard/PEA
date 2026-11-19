@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from collections.abc import Iterator
 from contextlib import closing
 from typing import cast
 
@@ -12,6 +13,7 @@ from omegaconf import DictConfig
 from src.constants.constants import EARNINGS_CALL_FEATURES
 from src.context import Context
 from src.data_aggregate.utils.common.incremental import plan_window, write_part
+from src.data_aggregate.utils.common.inputs import input_windows, load_source, source_read_scope
 from src.data_aggregate.utils.price.frames import load_price_frames, load_trading_calendar
 from src.data_aggregate.utils.text.earnings_call_embeddings import (
     build_embedding_kpis,
@@ -35,10 +37,11 @@ from src.data_aggregate.utils.text.nlp_sentiment import get_sentiment_engine
 from src.data_store.schema import Table, Tables
 from src.gpt_extract import embed_texts, openai_api_key
 from src.utils.data_policy import source_read_window, window_policy
+from src.utils.publication import point_in_time
 from src.utils.step import Step
 from src.utils.text.earnings_call_split import CALL_SECTIONS, split_call
 from src.utils.text.text_metrics import assess_earnings_call_sections, clean_earnings_call_paragraphs, word_count
-from src.utils.window import WindowPlan
+from src.utils.window import Window, WindowPlan
 
 
 class StepCubeText(Step):
@@ -53,7 +56,6 @@ class StepCubeText(Step):
         embedding = config.gpt.embedding
         self._sentiment_model = settings.sentiment_model
         self._embedding_model = embedding.model
-        self._lag = int(config.data.tables.earnings_call_sections.pit.lag.value)
         self._signal_sessions = settings.signal_sessions
         self._embedding_batch = embedding.batch_size
         self._embedding_max_chars = embedding.max_chars
@@ -344,52 +346,40 @@ class StepCubeText(Step):
 
     def run_features(self, calendar: pd.DatetimeIndex, plan: TextPlan) -> None:
         """Read only required saved history and tail prices, calculate KPIs and persist output."""
-
-        # Resolve active issuer history before loading feature inputs.
-        roster, lineage, tenure = load_issuer_identity(self._context)
-        source = plan.source[pd.MultiIndex.from_frame(plan.source[["ticker", "quarter"]]).isin(plan.eligible)]
-        identified = attach_issuer_identity(source, roster, lineage, tenure)
-        scope = feature_history_scope(identified, calendar, plan.window.read.start, self._lag, self._signal_sessions)
-        where = {"ticker": sorted(scope["ticker"].unique()), "quarter": sorted(scope["quarter"].unique())}
+        # Compile payload windows separately from full-range cache completion metadata.
+        windows = input_windows(self._context, Tables.cube_part_text, plan.window.write)
+        scope = self._feature_scope(calendar, plan, windows)
         history_from = None if scope.empty else pd.Timestamp(scope["as_of"].min())
         history_until = None if scope.empty else pd.Timestamp(scope["as_of"].max())
-
-        # Reuse sentiment, materialize prices once, and open one embedding stream.
-        sentiment = plan.sentiment
+        sentiment = self._feature_sentiment(scope, windows[Tables.earnings_call_sentiment], calendar)
         frames = (
-            load_price_frames(self._context, peers={}, calendar=calendar, fields=self._FIELDS, window=plan.window.read) if not scope.empty else None
+            load_price_frames(self._context, peers={}, calendar=calendar, fields=self._FIELDS, window=windows[Tables.cube_part_prices])
+            if not scope.empty
+            else None
         )
-        embeddings = self._store.iter_load(
-            Tables.earning_calls_embedding,
-            chunksize=5_000,
-            columns=["ticker", "quarter", "seq", "as_of", "section", "tag", "exchange_idx", "embedding", "model"],
-            where={**where, "model": self._embedding_cache},
-            since=history_from,
-            until=history_until,
-            date_col="as_of",
-            order_by=["ticker", "quarter", "seq"],
-        )
-
-        # Join matching sentiment dates and reduce complete embedding calls to KPIs.
         per_call = scope.copy()
         if not sentiment.empty:
-            sentiment = sentiment.merge(scope[["ticker", "quarter", "as_of"]], on=["ticker", "quarter"], suffixes=("", "_source"))
-            sentiment = sentiment[sentiment["as_of"].eq(sentiment["as_of_source"])].drop(columns="as_of_source")
             metrics = sentiment_kpis(sentiment).drop(columns="as_of")
+            metrics = metrics.merge(sentiment.groupby(["ticker", "quarter"], as_index=False)["_sentiment_public"].max(), on=["ticker", "quarter"])
             per_call = per_call.merge(metrics, on=["ticker", "quarter"], how="left")
-
-        with closing(embeddings):
+        with closing(self._feature_embeddings(scope, windows[Tables.earning_calls_embedding], calendar)) as embeddings:
             vectors = feature_embedding_chunks(embeddings, scope, plan.embedding_work)
             per_call = per_call.merge(build_embedding_kpis(vectors), on=["ticker", "quarter"], how="left")
+        metadata = scope[["ticker", "quarter", "as_of"]]
+        if not metadata.empty:
+            metadata = point_in_time(metadata, self._config, Tables.earning_calls_embedding, calendar)
+            dates = metadata.groupby(["ticker", "quarter"], as_index=False)["as_of"].max().rename(columns={"as_of": "_embedding_public"})
+            per_call = per_call.merge(dates, on=["ticker", "quarter"], how="left")
+        clocks = [name for name in ("_call_public", "_sentiment_public", "_embedding_public") if name in per_call]
+        per_call["as_of"] = per_call[clocks].max(axis=1)
 
-        # Project the ten call KPIs onto the output trading sessions.
+        # Daily projection consumes already eligible clocks; there is no second source lag.
         panel = build_earnings_call_feature_panel(
             per_call,
             calendar,
             availability=None if frames is None else frames.availability,
-            availability_lag_days=self._lag,
             signal_sessions=self._signal_sessions,
-            since=plan.window.read.start,
+            since=plan.window.write.start,
         )
 
         # Save once, or clear stale output when no eligible features remain.
@@ -400,7 +390,49 @@ class StepCubeText(Step):
             history_from,
             history_until,
             len(scope),
-            plan.window.read.start if plan.window.read.start is not None else "FULL",
+            plan.window.write.start,
             calendar[-1].date(),
             len(panel),
         )
+
+    def _feature_scope(self, calendar: pd.DatetimeIndex, plan: TextPlan, windows: dict[Table, Window | None]) -> pd.DataFrame:
+        """Use source metadata to select emitters without silently widening finite payload budgets."""
+        if windows[Tables.universe_cik_symbol] is not None or windows[Tables.symbol_tenure] is not None:
+            raise ValueError("Text issuer identity requires complete validity intervals")
+        roster, lineage, tenure = load_issuer_identity(self._context)
+        source = plan.source[pd.MultiIndex.from_frame(plan.source[["ticker", "quarter"]]).isin(plan.eligible)]
+        source = point_in_time(source, self._config, Tables.earnings_call_sections, calendar)
+        source = source.assign(_call_public=source["as_of"], as_of=source["_source_as_of"])
+        identified = attach_issuer_identity(source, roster, lineage, tenure)
+        scope = feature_history_scope(identified, calendar, plan.window.write.start, self._config, self._signal_sessions)
+        for table in (Tables.earnings_call_sections, Tables.earnings_call_sentiment, Tables.earning_calls_embedding):
+            window = windows[table]
+            if window is not None and not window.mask(scope["as_of"]).all():
+                raise ValueError(f"{Tables.cube_part_text.name}/{table.name}: finite warmup cannot cover a required active/predecessor call")
+        return scope
+
+    def _feature_sentiment(self, scope: pd.DataFrame, window: Window | None, calendar: pd.DatetimeIndex) -> pd.DataFrame:
+        """Read one bounded feature payload, retaining its original source key and eligible day."""
+        rows = load_source(self._context, Tables.earnings_call_sentiment, columns=SENTIMENT_COLUMNS, window=window)
+        rows = pd.DataFrame(columns=SENTIMENT_COLUMNS) if rows is None else valid_sentiment_rows(rows, self._sentiment_cache)
+        rows = point_in_time(rows, self._config, Tables.earnings_call_sentiment, calendar)
+        rows = rows.assign(_sentiment_public=rows["as_of"], as_of=rows["_source_as_of"])
+        return rows.merge(scope[["ticker", "quarter", "as_of"]], on=["ticker", "quarter", "as_of"], how="inner")
+
+    def _feature_embeddings(self, scope: pd.DataFrame, window: Window | None, calendar: pd.DatetimeIndex) -> Iterator[pd.DataFrame]:
+        """Stream one bounded vector payload, preparing its source clock before comparisons."""
+        where = {"ticker": sorted(scope["ticker"].unique()), "quarter": sorted(scope["quarter"].unique()), "model": self._embedding_cache}
+        query = source_read_scope(self._context, Tables.earning_calls_embedding, window)
+        stream = self._store.iter_load(
+            Tables.earning_calls_embedding,
+            chunksize=5_000,
+            columns=["ticker", "quarter", "seq", "as_of", "section", "tag", "exchange_idx", "embedding", "model"],
+            where=where,
+            order_by=["ticker", "quarter", "seq"],
+            **query,
+        )
+        with closing(stream):
+            for rows in stream:
+                ready = point_in_time(rows, self._config, Tables.earning_calls_embedding, calendar)
+                ready["as_of"] = ready["_source_as_of"]
+                yield ready

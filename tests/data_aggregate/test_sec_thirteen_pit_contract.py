@@ -17,8 +17,10 @@ from src.data_aggregate.utils.sec_thirteen.institutional_features import (
 from src.data_aggregate.utils.sec_thirteen.superinvestor_metrics import BehaviorMarket, PairTable, prepare_pair_sample
 from src.utils.identity_tables import LINE_COLUMNS, CusipTags
 from src.utils.price.adjustments import ShareBasis
+from src.utils.window import Window
 from tests.conftest import make_frames
 from tests.data_aggregate.sec_thirteen_legacy_reference import LEGACY_F13_SETTLE_TRADING_DAYS as F13_SETTLE_TRADING_DAYS
+from tests.data_aggregate.sec_thirteen_read_windows import read_windows
 from tests.data_aggregate.test_superinvestor_features import _book
 
 
@@ -114,7 +116,13 @@ def test_broad_basis_gate_preserves_reported_usd(monkeypatch: pytest.MonkeyPatch
     empty = pd.DataFrame(columns=["ticker", "date", "value"])
     basis = ShareBasis(empty, empty, empty, {}, actual_available=False)
     frames = make_frames(index, close_pit=pd.DataFrame(50.0, index=index, columns=["TEST"]), security_basis=_basis_frame(basis))
-    resources = SecThirteenResources(frames, None, CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame(columns=["cusip", "ticker"])), {})
+    resources = SecThirteenResources(
+        frames,
+        None,
+        CusipTags(pd.DataFrame(columns=LINE_COLUMNS), pd.DataFrame(columns=["cusip", "ticker"])),
+        {},
+        windows=read_windows(Window(frames.trading_index[0], frames.trading_index[-1])),
+    )
     step = object.__new__(StepCubeSecThirteen)
     step._store, step._cfg, step._settle_days = None, {"sec_thirteen": {}, "bond_lines": {}}, F13_SETTLE_TRADING_DAYS
     monkeypatch.setattr(step_module.thirteen_inputs, "iter_filing_vintages", lambda *args, **kwargs: iter(()))

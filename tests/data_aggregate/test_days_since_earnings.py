@@ -8,7 +8,7 @@ import pandas as pd
 from src.data_aggregate.utils.fundamentals.earnings_features import build_earnings_feature_panel, days_since_earnings
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
-from src.utils.publication import publication_rows
+from src.utils.publication import point_in_time
 from tests.support.config import fixture_config
 
 
@@ -24,7 +24,7 @@ def _earnings() -> pd.DataFrame:
 
 def test_days_since_earnings_ramp_reset_clip() -> None:
     idx = pd.bdate_range("2020-01-01", "2020-09-01")
-    days = days_since_earnings(publication_rows(fixture_config(), Tables.earnings_surprises, _earnings(), idx, "as_of"), idx, cap_days=180)
+    days = days_since_earnings(point_in_time(_earnings(), fixture_config(), Tables.earnings_surprises, idx), idx, cap_days=180)
     assert pd.isna(days.loc["2020-01-15", "A"])
     assert days.loc["2020-01-16", "A"] == 1
     assert days.loc["2020-01-20", "A"] == 5
@@ -40,7 +40,7 @@ def test_panel_emits_raw_feature_leakfree() -> None:
     df_close = pd.DataFrame(100.0, index=idx, columns=["A", "B"])
     peers = {"A": {"B": 1.0}, "B": {"A": 1.0}}
     panel = build_earnings_feature_panel(
-        publication_rows(fixture_config(), Tables.earnings_surprises, _earnings(), idx, "as_of"),
+        point_in_time(_earnings(), fixture_config(), Tables.earnings_surprises, idx),
         PriceFrames(trading_index=idx, universe=(), peers=peers, close_split=df_close),
     )
     df_a = panel.loc[panel["ticker"].eq("A")].dropna(subset=["f_days_since_earnings"])

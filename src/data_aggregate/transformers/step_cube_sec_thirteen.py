@@ -1,4 +1,4 @@
-"""Load once, reconcile public13F books, calculate features and save one effective window."""
+"""Read scoped public13F books, preserve pooled repair and save one bounded output window."""
 
 from __future__ import annotations
 
@@ -45,6 +45,7 @@ class SecThirteenResources:
     cohorts: Mapping[str, frozenset[str]] | None
     tags: CusipTags
     limits: Mapping[str, pd.Series]
+    windows: Mapping[Table, Window | None]
 
 
 @dataclass(frozen=True)
@@ -78,13 +79,13 @@ class StepCubeSecThirteen(Step):
         self._require_saved_calendar(saved_dates, calendar, window.write.start)
 
         # Load the shared dependencies once; keep both families' sparse full histories for genuine lag comparisons.
-        resources = self._load_resources(Window(calendar[0], window.read.end), calendar)
+        resources = self._load_resources(window, calendar)
         prepared = PreparedSecThirteen(self._institutional_features(resources), self._superinvestor_history(resources))
         self._require_saved_families(prepared, existing_columns)
 
         # Project the output window; a full window is the whole history.
         dates = resources.frames.trading_index
-        output_dates = dates[(dates >= window.read.start) & (dates <= window.read.end)]
+        output_dates = dates[(dates >= window.write.start) & (dates <= window.write.end)]
         panels = self._project_panels(resources, prepared, output_dates)
         supported = self._feature_columns(panels)
 
@@ -121,11 +122,16 @@ class StepCubeSecThirteen(Step):
         if not rewrite_dates.difference(calendar).empty:
             raise RuntimeError("SEC13F price calendar ends before the saved output frontier or omits a saved rewrite date; no rows may be replaced.")
 
-    def _load_resources(self, window: Window, calendar: pd.DatetimeIndex) -> SecThirteenResources:
+    def _load_resources(self, window: WindowPlan, calendar: pd.DatetimeIndex) -> SecThirteenResources:
         # Read the shared dependencies once before any cleaning or feature work.
-        frames = load_price_frames(self._context, peers=load_peers_or_raise(self._context), calendar=calendar, fields=self._FIELDS, window=window)
+        windows = capital_inputs.input_windows(self._context, Tables.cube_part_sec_thirteen, window.write)
+        frames = load_price_frames(
+            self._context, peers=load_peers_or_raise(self._context), calendar=calendar, fields=self._FIELDS, window=windows[Tables.cube_part_prices]
+        )
         frames.require(*self._FIELDS)
-        history = capital_inputs.load_source(self._context, Tables.superinvestor_roster)
+        history = capital_inputs.load_source(self._context, Tables.superinvestor_roster, window=windows[Tables.superinvestor_roster])
+        if windows[Tables.universe_cusip] is not None or windows[Tables.cusip_ticker_map] is not None:
+            raise ValueError("SEC13F attribution requires full universe_cusip and cusip_ticker_map validity evidence")
         tags = CusipTags.load(self._store)
 
         # The ordered list is user-owned; membership never depends on portfolio prices.
@@ -140,13 +146,17 @@ class StepCubeSecThirteen(Step):
             "mcap": prepare_public_value_quotes(frames.mcap_pit),
             "shares_out": prepare_public_value_quotes(frames.shares_outstanding_pit),
         }
-        return SecThirteenResources(frames, cohorts, tags, {name: series for name, series in limits.items() if series is not None})
+        return SecThirteenResources(frames, cohorts, tags, {name: series for name, series in limits.items() if series is not None}, windows)
 
     def _institutional_features(self, resources: SecThirteenResources) -> pd.DataFrame | None:
         # Universe positions: under a universe ticker or on a universe company's CUSIP (a class filed under its own ticker).
-        universe, until = resources.frames.universe, resources.frames.trading_index.max()
+        universe = resources.frames.universe
         packets = thirteen_inputs.iter_filing_vintages(
-            self._context, until, bond_lines=self._cfg["bond_lines"], universe=universe, cusips=universe_cusips(resources.tags.lines, universe)
+            self._context,
+            resources.windows[Tables.sec13f_hr],
+            bond_lines=self._cfg["bond_lines"],
+            universe=universe,
+            cusips=universe_cusips(resources.tags.lines, universe),
         )
         if packets is None:
             return None
@@ -171,8 +181,8 @@ class StepCubeSecThirteen(Step):
             return None
 
         # Whole roster books by the literal CIK list (an index scan; a subquery form scans every row).
-        until, ciks = resources.frames.trading_index.max(), sorted(resources.cohorts[""])
-        packets = thirteen_inputs.iter_filing_vintages(self._context, until, ciks, bond_lines=self._cfg["bond_lines"])
+        ciks = sorted(resources.cohorts[""])
+        packets = thirteen_inputs.iter_filing_vintages(self._context, resources.windows[Tables.sec13f_hr], ciks, bond_lines=self._cfg["bond_lines"])
         if packets is None:
             return None
 
@@ -181,7 +191,9 @@ class StepCubeSecThirteen(Step):
         cfg = self._cfg["sec_thirteen"]
         age_days = int(cfg["superinvestor"]["max_age_calendar_days"])
         consensus = build_consensus_quotes(
-            lambda: thirteen_inputs.iter_filing_vintages(self._context, until, ciks, bond_lines=self._cfg["bond_lines"]),
+            lambda: thirteen_inputs.iter_filing_vintages(
+                self._context, resources.windows[Tables.sec13f_hr], ciks, bond_lines=self._cfg["bond_lines"]
+            ),
             resources.tags,
             resources.frames.close_pit,
             resources.limits,

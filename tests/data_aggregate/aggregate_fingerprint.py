@@ -60,7 +60,7 @@ from src.data_aggregate.utils.institutionals.short_flow_features import FtdSourc
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
 from src.utils.config import read_config
-from src.utils.publication import publication_rows
+from src.utils.publication import point_in_time
 from tests.conftest import make_frames
 from tests.data_aggregate.pipeline_fingerprint import frame_digest
 from tests.support.config import fixture_config
@@ -837,7 +837,6 @@ def compute() -> dict:
     from src.data_aggregate.utils.institutionals.short_flow_features import (
         FtdPublication,
         ShortFlowCapital,
-        _ftd_available_dates,
         build_short_flow_feature_panel,
         prepare_fails_quantities,
         secondary_class_volume,
@@ -987,14 +986,14 @@ def compute() -> dict:
     out["panel.sector"] = frame_digest(sp)
     out["panel.earnings"] = frame_digest(
         build_earnings_feature_panel(
-            publication_rows(fixture_config(), Tables.earnings_surprises, earn, idx, "as_of"),
+            point_in_time(earn, fixture_config(), Tables.earnings_surprises, idx),
             PriceFrames(trading_index=idx, universe=(), peers=peers, close_split=close),
         )
     )
     out["panel.employee"] = frame_digest(build_employee_feature_panel(fund, employee_rows(fund), peers, idx, part_time_weight=0.5))
     out["panel.dividend"] = frame_digest(
         build_dividend_feature_panel(
-            publication_rows(fixture_config(), Tables.prices_dividends, div, idx, "available_on"),
+            point_in_time(div, fixture_config(), Tables.prices_dividends, idx).assign(available_on=lambda rows: rows["as_of"]),
             replace(cast(PriceFrames, legacy_prices), trading_index=idx, peers=peers),
             FundamentalHistory(raw_history=fund, share_basis=known_no_share_events()),
         )
@@ -1010,15 +1009,17 @@ def compute() -> dict:
         idx, peers, close_split=close, close_pit=valuation_close, shares_outstanding_pit=saved_shares, mcap_pit=valuation_close * saved_shares
     )
     short_capital = ShortFlowCapital(saved_shares * df_terminal, with_class_volume(px["volume"], class_volume))
-    ftd_coverage = ftd[["date", "period"]]
+    ftd_coverage = point_in_time(ftd[["date", "period"]], fixture_config(), Tables.sec_fails_to_deliver_security, idx)
     ftd_settlement = prepare_fails_quantities(terminal_rows(ftd, ("fails_quantity",), df_terminal), ftd_coverage, idx, None, None)
-    ftd_publication = FtdPublication(ftd_coverage, _ftd_available_dates(ftd_coverage, 21))
+    available = ftd_coverage.drop_duplicates("period").set_index("period")["as_of"].to_dict()
+    ftd_publication = FtdPublication(ftd_coverage, available)
     df_short_flow = build_short_flow_feature_panel(
         make_frames(idx, peers, volume=px["volume"], close_total=close),
-        terminal_rows(short_hist, ("short_volume", "total_volume"), df_terminal),
+        point_in_time(
+            terminal_rows(short_hist, ("short_volume", "total_volume"), df_terminal), fixture_config(), Tables.sec_short_volume_security, idx
+        ),
         FtdSource(ftd_settlement, ftd_publication),
         short_capital,
-        read_config("./configs"),
     )
     assert df_short_flow["f_ic_ftd_persistence_30d"].nunique() > 1, "Do not freeze unavailable FTD persistence"
     out["panel.short_flow"] = frame_digest(df_short_flow)

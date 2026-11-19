@@ -11,9 +11,8 @@ import pandas as pd
 
 from src.constants.constants_price import MACRO_ALL_SERIES
 from src.context import Context
-from src.data_store.schema import ALL, RESUME_ARCHIVE, Table, Tables, resolve
+from src.data_store.schema import ALL, Table, Tables
 from src.data_store.store import KeySample
-from src.utils.data_policy import publication_policy
 from src.utils.publication import period_end
 from src.utils.window import Window
 from src.validate.result import CheckResult, Finding, jsonable
@@ -36,17 +35,14 @@ class SampleSelection:
     date_col: str | None = None
 
 
-def _sample_source(context: Context, table: Table, columns: list[str]) -> tuple[Table, str | None]:
-    """Use the configured raw clock, or the inherited filing source for undated companions."""
-    item = context.config.data.tables[table.name]
-    if item.status == "snapshot":
-        return table, None
-    clock = item.pit.get("clock") or table.date_col
-    if table.resume is not None and table.resume.mode == RESUME_ARCHIVE:
-        clock = table.resume.period_col
-    if clock in columns or item.pit.mode != "inherit":
-        return table, clock
-    return resolve(str(item.pit.source)), publication_policy(context.config, table).get("clock")
+def _sample_source(context: Context, table: Table) -> tuple[Table, str | None]:
+    """Use the configured raw clock; the undated footnote grain follows its filing parent."""
+    if table == Tables.insider_footnotes:
+        parent = Tables.insider_transactions
+        return parent, str(context.config.data.tables[parent.name].pit.column)
+    item = context.config.data.tables.get(table.name, {})
+    clock = item.get("pit", {}).get("column") or table.date_col
+    return table, clock
 
 
 def capture_window_selection(context: Context, table: Table) -> dict[str, Any]:
@@ -54,7 +50,7 @@ def capture_window_selection(context: Context, table: Table) -> dict[str, Any]:
     # Resolve the audit's scope before any payload or model-output access.
     if table not in timing_sample_tables():
         raise ValueError(f"{table.name}: model and portfolio outputs are excluded from timing validation")
-    if context.config.data.tables[table.name].status == "inactive":
+    if table == Tables.notes_embedding:
         return {"reason": "No active producer in the configured pipeline", "applicability": "inactive"}
     options = context.config.validate.window_samples
     start = pd.Timestamp(year=int(options.year), month=1, day=1)
@@ -65,7 +61,7 @@ def capture_window_selection(context: Context, table: Table) -> dict[str, Any]:
     columns = context.store.columns(table)
     if not columns or not set(table.pk) <= set(columns):
         return {"reason": "Source table absent or missing its registered complete primary key"}
-    source, clock = _sample_source(context, table, columns)
+    source, clock = _sample_source(context, table)
     source_columns = columns if source == table else context.store.columns(source)
     if clock is not None and clock not in source_columns:
         return {"reason": f"Missing configured source clock {source.name}.{clock}"}
@@ -74,7 +70,8 @@ def capture_window_selection(context: Context, table: Table) -> dict[str, Any]:
     where: dict[str, Any] = {}
     if source.ticker_col is not None and source.ticker_col in source_columns:
         where[source.ticker_col] = list(MACRO_ALL_SERIES) if source == Tables.prices_macro else context.universe.tickers
-    if clock is not None and source.resume is not None and clock == source.resume.period_col:
+    archive_tag = source.resume is not None and clock == source.resume.period_col and clock not in source.date_type_cols
+    if clock is not None and archive_tag:
         year = int(options.year)
         tags = [
             *(f"{year}q{quarter}" for quarter in range(1, 5)),
@@ -100,7 +97,7 @@ def capture_window_selection(context: Context, table: Table) -> dict[str, Any]:
     if len(df_keys) != request.count or df_keys[list(table.pk)].isna().any(axis=None):
         return {"reason": f"Only {len(df_keys)} of {request.count} required sample groups have complete keys", "sample_scope": scope}
     projection = tuple(column for column in columns if column != table.vector_col)
-    scalar_clock = clock if source == table and (source.resume is None or clock != source.resume.period_col) else None
+    scalar_clock = clock if source == table and not archive_tag else None
     selection = SampleSelection(projection, jsonable(df_keys[list(table.pk)].to_dict("records")), date_col=scalar_clock)
     return {"selection": asdict(selection), "sample_scope": scope, "excluded_vector": table.vector_col}
 

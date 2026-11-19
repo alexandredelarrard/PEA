@@ -15,6 +15,7 @@ from src.constants.constants import SEC_NET_PENSION_LIABILITY_TAGS
 from src.context import Context
 from src.data_aggregate.utils.common import capital
 from src.data_aggregate.utils.common.frames import clip_tax_rate, ratio, sanitize
+from src.data_aggregate.utils.common.inputs import source_read_scope
 from src.data_aggregate.utils.common.pit import (
     filing_count_prior,
     fiscal_change_to_daily,
@@ -35,10 +36,9 @@ from src.data_aggregate.utils.fundamentals.inputs import FundamentalFeatureSetti
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
 from src.data_aggregate.utils.price.frames import PriceFrames, comparison_share_history
 from src.data_store.schema import Tables
-from src.utils.data_policy import source_read_window
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.per_share import ordinary_per_share_to_security, same_capital_scope, vendor_ordinary_per_share
-from src.utils.publication import publication_rows
+from src.utils.publication import point_in_time
 from src.utils.window import Window
 
 _FACT_COLS = ["ticker", "tag", "ddate", "qtrs", "value", "filed", "available_at", "adsh", "period"]
@@ -298,22 +298,16 @@ def _net_pension_daily(notes_num: pd.DataFrame | None, idx: pd.DatetimeIndex) ->
 
 
 def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeIndex) -> pd.DataFrame:
-    """One tag from the NOTES sets (`notes_num`) -> daily wide frame, point-in-time on
-    the later of filing and archive availability, latest period-end (`ddate`) per
+    """One tag from the prepared NOTES rows -> daily frame on configured source eligibility, latest period-end (`ddate`) per
     filing; the later filing date, then the accession, breaks a tie between filings.
     Keeps the balance-type facts only (qtrs==0, e.g. PBO / plan assets). Empty frame if unavailable."""
-    if notes_num is None or notes_num.empty or not {"tag", "ticker", "filed", "available_at", "adsh"} <= set(notes_num.columns):
+    if notes_num is None or notes_num.empty or not {"tag", "ticker", "as_of", "adsh"} <= set(notes_num.columns):
         return pd.DataFrame(index=idx)
     d = notes_num[notes_num["tag"] == tag].copy()
     if d.empty:
         return pd.DataFrame(index=idx)
-    filed = pd.to_datetime(d["filed"], errors="coerce")
-    available = pd.to_datetime(d["available_at"], errors="coerce")
-    valid_clock = filed.notna() & available.notna()
-    d = d[valid_clock].copy()
-    filed = filed[valid_clock]
-    available = available[valid_clock]
-    d["as_of"] = filed.where(filed >= available, available)
+    filed = pd.to_datetime(d.get("filed", pd.Series(pd.NaT, index=d.index)), errors="coerce")
+    d["as_of"] = pd.to_datetime(d["as_of"], errors="coerce")
     d["value"] = pd.to_numeric(d.get("value"), errors="coerce")
     q = pd.to_numeric(d.get("qtrs"), errors="coerce").fillna(0)
     d = d[q == 0]
@@ -321,7 +315,7 @@ def _notes_num_daily(notes_num: pd.DataFrame | None, tag: str, idx: pd.DatetimeI
     if d.empty:
         return pd.DataFrame(index=idx)
     d["filed"] = filed
-    d = d.sort_values(["ticker", "as_of", "ddate", "filed", "adsh"]).rename(columns={"value": tag})
+    d = d.sort_values(["ticker", "as_of", "ddate", "filed", "adsh"], na_position="first").rename(columns={"value": tag})
     return fundamentals_to_daily(
         d,
         tag,
@@ -335,7 +329,7 @@ def load_notes_num_scoped(
     sessions: pd.DatetimeIndex,
     *,
     tickers: tuple[str, ...] | None = None,
-    since: pd.Timestamp | None = None,
+    window: Window | None = None,
 ) -> pd.DataFrame | None:
     """`notes_num` restricted to the 4 tags the pension features read (PBO, plan assets and
     the two recognized net-liability tags), the tag filter pushed down server-side in one
@@ -345,15 +339,15 @@ def load_notes_num_scoped(
     where: dict[str, object] = {"tag": [_FN_PBO_TAG, _FN_PLAN_ASSETS_TAG, *SEC_NET_PENSION_LIABILITY_TAGS]}
     if tickers:
         where["ticker"] = list(tickers)
-    retained = source_read_window(context.config, Tables.notes_num, context.run.as_of)
-    if retained is None:
+    scope = source_read_scope(context, Tables.notes_num, window)
+    where.update(scope.pop("where", {}))
+    df = context.store.load(Tables.notes_num, columns=_FACT_COLS, where=where, optional=True, **scope)
+    if df is None:
         return None
-    window = retained.intersection(Window(since, context.run.as_of)) if since is not None else retained
-    if window is None:
-        return None
-    where["filed"] = window
-    df = context.store.load(Tables.notes_num, columns=_FACT_COLS, where=where, optional=True)
-    return publication_rows(context.config, Tables.notes_num, df, sessions, "available_at").reset_index(drop=True) if df is not None else None
+    ready = point_in_time(df, context.config, Tables.notes_num, sessions)
+    ready["_source_available_at"] = ready["available_at"]
+    ready["available_at"] = ready["as_of"]
+    return ready.reset_index(drop=True)
 
 
 def _forensic_fields(daily, idx: pd.DatetimeIndex, prior=None) -> dict:

@@ -45,7 +45,6 @@ import pandas as pd
 
 from src.context import Context
 from src.data_store.schema import Tables
-from src.utils.data_policy import source_read_window
 from src.utils.price.adjustments import ShareBasis
 from src.utils.price.frames import extract_field, prices_long_to_multiindex
 from src.utils.price.levels import rebase_security_quantities
@@ -217,10 +216,8 @@ def load_trading_calendar(context: Context) -> pd.DatetimeIndex:
     those dates before writing, and a row survives the write only if some field is non-null.
     It used to read `cube_part_market` -- the same dates, one table earlier. Cheap
     (`SELECT DISTINCT date`), so the incremental window can be decided BEFORE the wide read."""
-    window = source_read_window(context.config, Tables.cube_part_prices, context.run.as_of)
-    if window is None:
-        raise ValueError("No configured price history is active for this run")
-    dates = context.store.distinct(Tables.cube_part_prices, "date", where={"date": window})
+    dates = context.store.distinct(Tables.cube_part_prices, "date")
+    dates = [day for day in dates if pd.Timestamp(day) <= context.run.as_of]
     if not dates:
         raise RuntimeError(f"{Tables.cube_part_prices} is missing or empty -> run `data_aggregate build-prices` first")
     return pd.DatetimeIndex(sorted(pd.to_datetime(pd.Series(dates)).dt.normalize().unique()), name="date")
@@ -241,10 +238,7 @@ def load_price_frames(
     that N times. The long frame is dropped as soon as the pivots exist.
     """
 
-    retained = source_read_window(context.config, Tables.cube_part_prices, context.run.as_of)
-    retained = retained.intersection(window) if retained is not None and window is not None else retained
-    if retained is None:
-        raise ValueError("No configured price history intersects the requested computation window")
+    retained = Window(calendar[0] if window is None else window.start, min(context.run.as_of, calendar[-1] if window is None else window.end))
     cols = ["date", "ticker"] + list(fields)
     chunks = list(
         context.store.iter_load(

@@ -453,10 +453,10 @@ def test_filings_dated_before_their_period_or_without_a_name_are_dropped() -> No
         cover[column] = None
     filings = zip_manager_filings(zip_submissions(sub, cover), cover, _Q4)
 
-    rows = candidate_rows(filings, pd.Timestamp("1999-06-30"), pd.Timestamp("2023-12-31"))
+    rows = candidate_rows(filings, pd.Timestamp("2023-12-31"))
 
     assert rows.empty
-    kept = candidate_rows(filings.assign(manager_name="NAMED"), pd.Timestamp("1999-06-30"), pd.Timestamp("2023-12-31"))
+    kept = candidate_rows(filings.assign(manager_name="NAMED"), pd.Timestamp("2023-12-31"))
     assert kept["cik"].tolist() == ["0001006435"], "only the filing dated before its period end is dropped once named"
     print("\n=== SANITY CHECK: row cleaning ===")
     print("A nameless filing and a filing dated before its period end give no row; the named, well-dated one stays. Validated.")
@@ -511,7 +511,7 @@ def test_real_cached_zip_rows_equal_the_covers(filename: str) -> None:
     df_sub, df_cover = tables["SUBMISSION.tsv"], tables["COVERPAGE.tsv"]
     filings = zip_manager_filings(zip_submissions(df_sub, df_cover), df_cover, filename)
 
-    rows = candidate_rows(filings, pd.Timestamp("1999-06-30"), pd.Timestamp("2026-12-31"))
+    rows = candidate_rows(filings, pd.Timestamp("2026-12-31"))
 
     submitted = zip_submissions(df_sub, df_cover)
     assert len(rows) == len(submitted.drop_duplicates(["cik", "report_period"]))
@@ -615,8 +615,8 @@ def test_manager_extraction_obeys_configured_filing_start_and_end(context: Any, 
     _write_data_set(_cache(context), _Q4, [_PIONEER, _CAPITAL])
     context.run = WindowRun("incremental", "finite manager filing sample", pd.Timestamp("2023-12-31"))
     policy = context.config.data.tables[Tables.sec_13f_manager_details.name]
-    policy.start_date, policy.end_date = "2023-10-30", "2023-10-30"
-    context.run = WindowRun("incremental", "manager filing fixture", context.run.as_of)
+    policy.start_date = "2023-10-30"
+    context.run = WindowRun("incremental", "manager filing fixture", pd.Timestamp("2023-10-30"))
     changed = fetch_manager_details(context)
     rows = _rows(store)
     assert changed == 1 and set(rows["cik"]) == {"0001006435"}
@@ -633,12 +633,12 @@ def test_manager_overlap_config_changes_actual_cover_repair_writes(context: Any,
     _write_data_set(_cache(context), _Q3, [changed, _NICHOLAS])
     opened = _spy_zip_reads(monkeypatch)
     policy = context.config.data.tables[Tables.sec_13f_manager_details.name]
-    policy.reprocess.overlap.value = 1
+    policy.overlap.days = 1
     assert fetch_manager_details(context) == 0 and opened == [_Q4]
     original = _rows(store)
     assert original.loc[original["period"].eq(pd.Timestamp("2023-06-30")) & original["cik"].eq("0001006435"), "manager_name"].eq(_PIONEER_Q3[5]).all()
     opened.clear()
-    policy.reprocess.overlap.value = 120
+    policy.overlap.days = 120
     assert fetch_manager_details(context) == 1 and opened == [_Q3, _Q4]
     updated = _rows(store)
     assert updated.loc[updated["period"].eq(pd.Timestamp("2023-06-30")) & updated["cik"].eq("0001006435"), "manager_name"].eq(changed[5]).all()

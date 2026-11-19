@@ -109,9 +109,10 @@ def clean_filings(
     are zeroed, with each manifest's stored row count reduced to match. The text columns the mask reads are dropped."""
     for df in (df_filings, df_holdings):
         for column in _DATES:
-            df[column] = pd.to_datetime(df[column])
+            df[column] = pd.to_datetime(df[column], errors="coerce")
     impossible = ~valid_reporting_periods(df_filings, config)
     if impossible.any():
+        logger.warning("13F: excluded %s invalid filing/report date rows before book preparation", int(impossible.sum()))
         typos = set(df_filings.loc[impossible, "accession_number"])
         df_filings = df_filings.loc[~impossible].reset_index(drop=True)
         df_holdings = df_holdings.loc[~df_holdings["accession_number"].isin(typos)]

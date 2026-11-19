@@ -196,6 +196,7 @@ def secondary_class_volume(
     volume = pd.DataFrame(0.0, index=idx, columns=companies)
     missing = pd.DataFrame(False, index=idx, columns=companies)
     gaps: list[str] = []
+    borrowed_days = 0
     for (company, symbol), group in work.groupby(["company", "symbol"], sort=True):
         active = np.zeros(len(idx), dtype=bool)
         for start, end in zip(group["start"], group["end"], strict=True):
@@ -216,13 +217,18 @@ def secondary_class_volume(
             borrowed = gap & np.isnan(raw) & np.isfinite(ratio) & (ratio > 0) & np.isfinite(own) & (own >= 0)
             volume[company] += np.where(borrowed, own, 0.0)
         missing[company] |= gap & ~borrowed
+        borrowed_days += int(borrowed.sum())
         if gap.any():
             days = idx[gap]
-            gaps.append(f"{company} {symbol} {int(gap.sum())} day(s) {days[0].date()}..{days[-1].date()}, {int(borrowed.sum())} at canonical volume")
+            gaps.append(
+                f"{company} {symbol} {days[0].date()}..{days[-1].date()}: {int(borrowed.sum()):,} borrowed, {int((gap & ~borrowed).sum()):,} unknown"
+            )
     if gaps:
         logger.warning(
-            "secondary-class volume: %s company-day(s) have an active class without supported input (canonical volume borrowed where the bar is absent): %s",
+            "secondary-class volume: %s company-day(s) unknown (an active class has no usable bar and no canonical volume to borrow); "
+            "%s class-day(s) use the canonical class's own volume because the class has no price bar. Per class: %s",
             f"{int(missing.to_numpy().sum()):,}",
+            f"{borrowed_days:,}",
             "; ".join(gaps),
         )
     finite = np.isfinite(volume)
@@ -460,14 +466,42 @@ def prepare_fails_quantities(
     if tenure_mask is not None:
         df_fails = df_fails.where(tenure_mask.reindex(index=idx, columns=df_fails.columns, fill_value=False))
 
-    # Report the same observed-date coverage used to distinguish zero from unknown.
-    logger.info(
-        "FTD period metadata covers %s of %s trading days (%.1f%%); missing issuer observations remain unknown",
-        int(on_file.sum()),
-        len(idx),
-        100 * float(on_file.mean()),
-    )
+    # Report what the FTD history can and cannot support: periods per session, then issuer-days per tenure.
+    _log_ftd_coverage(df_fails, on_file, tenure_mask)
     return FtdSettlement(df_fails, on_file)
+
+
+def _log_ftd_coverage(df_fails: pd.DataFrame, on_file: pd.Series, tenure_mask: pd.DataFrame | None) -> None:
+    """Sessions covered by a published FTD period, and issuer-days usable, unknown or outside the issuer's supported tenure."""
+    covered = on_file.to_numpy()
+    if not covered.any():
+        logger.warning("FTD: no published period covers any session; every FTD feature is unknown")
+        return
+    position = np.arange(len(covered))
+    era = position >= int(np.argmax(covered))
+    after_last = position > len(covered) - 1 - int(np.argmax(covered[::-1]))
+    in_tenure = np.ones(df_fails.shape, dtype=bool) if tenure_mask is None else tenure_mask.reindex_like(df_fails).fillna(False).to_numpy(dtype=bool)
+    in_tenure = in_tenure[era]
+    observed = df_fails.notna().to_numpy()[era]
+    unknown = in_tenure & ~observed
+    on_covered_day = covered[era][:, None]
+    logger.info(
+        "FTD coverage since %s: %s of %s session(s) lie in a published period (%s inside the history without one, %s after the last period); "
+        "of %s issuer-day(s): %s usable (%.1f%%), %s unknown in tenure (%s on a covered session with no issuer record, %s on a session without a period), "
+        "%s outside the issuer's supported tenure (excluded)",
+        df_fails.index[era][0].date(),
+        f"{int(covered.sum()):,}",
+        f"{int(era.sum()):,}",
+        f"{int((era & ~covered & ~after_last).sum()):,}",
+        f"{int(after_last.sum()):,}",
+        f"{in_tenure.size:,}",
+        f"{int(observed.sum()):,}",
+        100 * observed.sum() / max(in_tenure.size, 1),
+        f"{int(unknown.sum()):,}",
+        f"{int((unknown & on_covered_day).sum()):,}",
+        f"{int((unknown & ~on_covered_day).sum()):,}",
+        f"{int((~in_tenure).sum()):,}",
+    )
 
 
 def _ftd_settlement_persistence(basis: pd.DataFrame, on_file: pd.Series, idx: pd.DatetimeIndex) -> pd.DataFrame:

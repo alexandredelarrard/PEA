@@ -137,7 +137,9 @@ def lag_insider_source(source: InsiderSource, config: DictConfig, sessions: pd.D
     session, so versions, windows, positions and the frontier all read the same lagged day."""
     df_rows = point_in_time(source.transactions, config, Tables.insider_transactions, sessions)
     df_rows["filing_date"] = df_rows["as_of"]
-    original = point_in_time(pd.DataFrame({"filing_date": df_rows["original_submission_date"]}), config, Tables.insider_transactions, sessions)
+    original = point_in_time(
+        pd.DataFrame({"filing_date": df_rows["original_submission_date"].dropna()}), config, Tables.insider_transactions, sessions
+    )
     df_rows["original_submission_date"] = original["as_of"].reindex(df_rows.index)
     first = point_in_time(pd.DataFrame({"filing_date": source.first_filed}), config, Tables.insider_transactions, sessions)
     frontier_rows = point_in_time(pd.DataFrame({"filing_date": [source.complete_through]}), config, Tables.insider_transactions, sessions)

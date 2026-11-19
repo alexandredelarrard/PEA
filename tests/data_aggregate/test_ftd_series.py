@@ -196,3 +196,23 @@ def test_real_stored_lines_reach_the_builder_as_company_series() -> None:
     assert np.allclose(settlement.quantities.loc[day, checked], expected.reindex(checked), rtol=1e-9)
     print(f"\nSANITY (real rows): {len(fails)} series rows for {multi} over {len(coverage)} served dates; on {day.date()} the")
     print(f"  builder frame holds {settlement.quantities.loc[day, checked].round(0).to_dict()} = sum(qty x ratio) of the stored lines.")
+
+
+def test_ftd_coverage_log_splits_usable_unknown_and_excluded_issuer_days(caplog):
+    """Eight sessions, periods covering sessions 2-6 only (two before, one after the covered span); AAA is in tenure the whole
+    time with an issuer record on 3 covered sessions, BBB is outside tenure on the first four sessions."""
+    idx = pd.bdate_range("2025-03-03", periods=8)
+    coverage = pd.DataFrame({"date": idx[2:6], "period": "202503a"})
+    fails = pd.DataFrame(
+        {"date": idx[[2, 3, 5]].tolist() + idx[[4]].tolist(), "ticker": ["AAA", "AAA", "AAA", "BBB"], "fails_quantity": 5.0, "period": "202503a"}
+    )
+    tenure = pd.DataFrame(True, index=idx, columns=["AAA", "BBB"])
+    tenure.loc[idx[:4], "BBB"] = False
+    with caplog.at_level("INFO"):
+        prepare_fails_quantities(fails, coverage, idx, pd.Index(["AAA", "BBB"], name="ticker"), tenure)
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith("FTD coverage"))
+    # era = sessions 2..7 (6 sessions: 4 covered, 0 gap inside, 2 after last); 12 issuer-days, BBB tenure off on session 2,3 -> 2 excluded
+    assert "4 of 6 session(s)" in line and "0 inside the history without one, 2 after the last period" in line, line
+    assert "of 12 issuer-day(s): 4 usable" in line and "2 outside the issuer's supported tenure" in line, line
+    assert "6 unknown in tenure (2 on a covered session with no issuer record, 4 on a session without a period)" in line, line
+    print(f"\nSANITY: the FTD log reports covered sessions, usable / unknown / excluded issuer-days that add up (4+6+2=12): {line}")

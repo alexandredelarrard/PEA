@@ -105,6 +105,10 @@ def test_classes_sum_times_ratio_with_a_supported_absence_and_a_lineage_fallback
 
     assert short is not None and list(short.columns) == ["date", "ticker", "short_volume", "total_volume", "as_of"]
     assert pd.api.types.is_datetime64_any_dtype(short["date"]) and not short.duplicated(["ticker", "date"]).any()
+    expected_public = short["date"].map(
+        {pd.Timestamp("2020-01-02"): pd.Timestamp("2020-01-03"), pd.Timestamp("2020-01-03"): pd.Timestamp("2020-01-06")}
+    )
+    pd.testing.assert_series_equal(short["as_of"], expected_public.dt.as_unit("ns"), check_names=False)
     got = {(t, f"{d:%m-%d}"): (s, v) for d, t, s, v in short[["date", "ticker", "short_volume", "total_volume"]].itertuples(index=False)}
     assert got[("BRK-B", "01-02")] == (100.0 + 1_500 * 2.0, 400.0 + 1_500 * 10.0), got
     assert got[("BRK-B", "01-03")][0] == 0.0 and np.isnan(got[("BRK-B", "01-03")][1]), "a supported absence"

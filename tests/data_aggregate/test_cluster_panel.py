@@ -378,6 +378,25 @@ def test_a_quarter_without_labels_for_the_quarter_before_stops_the_build(world: 
     print("SANITY: unlabelled 2024-06-30 stops the quarter 2024-09-30 before any line is read or any row written.")
 
 
+def test_report_periods_before_the_declared_source_start_do_not_open_the_plan(world: Any) -> None:
+    w = world("2025-03-31")
+    w.run(full=True)
+    clean = w.part()
+    # a typo-dated or very late filed old period (1987, 1997) whose first filing falls inside the source window must not pull the plan back
+    strays = pd.DataFrame(
+        [
+            (MANAGERS[0], pd.Timestamp("1987-03-31"), -1, pd.Timestamp("2003-05-01")),
+            (MANAGERS[0], pd.Timestamp("1997-06-30"), 0, pd.Timestamp("2003-05-01")),
+        ],
+        columns=["cik", "period", "cluster", "first_filed_date"],
+    )
+    w.store.save(Tables.sec_13f_manager_details, strays)
+    w.writes.clear()
+    w.run(full=True)
+    pd.testing.assert_frame_equal(w.part(), clean)
+    print("SANITY: labels of periods 1987-03-31 and 1997-06-30 before the 1999-07-01 source start leave the quarters planned and the part unchanged.")
+
+
 LATE_MANAGER = "0000000011"  # labelled cluster 0 and files every book 60 days after its period end, after the deadline of any quarter
 
 

@@ -172,11 +172,14 @@ class StepCubeSecThirteen(Step):
             raise RuntimeError(f"{self._part.table} has {len(saved_columns) - 2} feature columns, the config {len(columns)}: {self._REBUILD}")
         if df_labels is None or df_labels["cluster"].isna().all():
             raise RuntimeError("no cluster labels in sec_13f_manager_details: run `data_aggregate build-cluster` first")
+        one = pd.offsets.QuarterEnd(1)
         labels = df_labels.assign(period=pd.to_datetime(df_labels["period"]).dt.normalize())
+        # a report period before the quarter that ends just ahead of the declared source start has no filing inside the source window
+        # (a typo-dated or very late filed old period): it is no quarter of the history and never opens the plan
+        labels = labels[labels["period"] >= retained.start - one]
 
         # plan: the publication day of every quarter with a previous label (`sec13f_hr.pit` after the filing deadline), the saved quarter and
         # the quarters to compute
-        one = pd.offsets.QuarterEnd(1)
         periods = pd.DatetimeIndex(pd.date_range(labels["period"].min() + one, calendar[-1], freq="QE"))
         published = publication_dates(periods, calendar, self._config).dropna()
         frontier = None if window.is_full else window.frontier

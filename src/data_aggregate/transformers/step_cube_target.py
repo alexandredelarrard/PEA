@@ -46,7 +46,7 @@ from src.data_aggregate.utils.target.factors import (
 from src.data_aggregate.utils.target.targets import build_targets_multi, fitted_beta_columns
 from src.data_store.schema import Table, Tables
 from src.utils.price.adjustments import load_bugfix
-from src.utils.publication import point_in_time
+from src.utils.publication import market_days, point_in_time
 from src.utils.step import Step
 from src.utils.window import Window, WindowPlan
 
@@ -99,7 +99,7 @@ class StepCubeTarget(Step):
             window=reads[Tables.cube_part_prices],
         )
         fundamentals = self._load_fundamentals(calendar, reads[Tables.sharadar_fundamentals_history])
-        macro = self._load_macro(reads[Tables.prices_macro])
+        macro = self._load_macro(calendar, reads[Tables.prices_macro])
 
         # ONE measurement, shared by the momentum STYLE FACTOR and the label's own momentum
         # exposure, so the two cannot end up masking different windows.
@@ -138,14 +138,16 @@ class StepCubeTarget(Step):
         df_rows = load_source(self._context, Tables.sharadar_fundamentals_history, columns=columns, window=window)
         return None if df_rows is None else point_in_time(df_rows, self._config, Tables.sharadar_fundamentals_history, calendar)
 
-    def _load_macro(self, window: Window | None) -> pd.DataFrame:
-        """Retain each configured series' causal prefix for changes and levels."""
+    def _load_macro(self, calendar: pd.DatetimeIndex, window: Window | None) -> pd.DataFrame:
+        """Publish macro inputs once; the latest source quote wins a shared eligible session."""
         series = sorted({MACRO_MARKET_SERIES, *MACRO_CUBE_FACTORS.values(), *DAILY_MACRO_LEVELS})
         df_rows = load_source(self._context, Tables.prices_macro, series, columns=["date", "ticker", "close"], window=window)
         if df_rows is None:
             raise RuntimeError(f"{Tables.prices_macro.name}: configured macro history is unavailable")
-        df_rows["date"] = pd.to_datetime(df_rows["date"], format="%Y-%m-%d")
-        return df_rows.pivot_table(index="date", columns="ticker", values="close", aggfunc="last").sort_index()
+        df_rows = point_in_time(df_rows, self._config, Tables.prices_macro, calendar)
+        df_rows = df_rows.sort_values("date", key=market_days, kind="stable")
+        df_rows["as_of"] = df_rows["as_of"].dt.as_unit(calendar.unit)
+        return df_rows.pivot_table(index="as_of", columns="ticker", values="close", aggfunc="last").sort_index().rename_axis("date")
 
     # ---- factor panel ---- #
     @staticmethod

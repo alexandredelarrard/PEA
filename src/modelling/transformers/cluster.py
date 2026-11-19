@@ -4,8 +4,9 @@ cluster.py  (src/modelling/transformers/cluster.py)
 `ClusterTransformer`: a standalone, data-agnostic k-means. `fit(df)` takes the configured features (optionally
 turned into a percentile rank within each `group_by` group), draws at most `max_rows_per_group` complete rows per
 group with the seed, z-scores every feature (equal weight) and fits k-means++; `transform(df)` returns the nearest
-centroid per row without refitting: null when a required feature is null; a feature declared `optional` that is null is left out of that row's distance. `save` / `load` round-trip the fit to JSON
-(centroids, standardisation, feature specs, fit-sample sizes and a `version` hash that `load` verifies).
+centroid per row without refitting: null when a required feature is null; a feature declared `optional` that is null is left out of
+that row's distance. `save` / `load` round-trip the fit to JSON (centroids, standardisation, feature specs, fit-sample sizes and a
+`version` hash that `load` verifies).
 It imports neither the model families nor the context.
 """
 

@@ -1,8 +1,7 @@
 """Manager clustering: which rows are fitted and labelled, which fitted clusters are kept, the saved ids and the label of each row.
 
 Every labelled row has an id. A fund at or above the size floor takes the id of its nearest fitted cluster: 0..keep-1 for a kept cluster
-(numbered by descending fit size) or a tracked id for a dropped one (numbered by the centroid value of the rule that drops it, so a refit
-does not swap them); a row of a category takes the id of its category; a row below the floor is -1; an eligible fund with a required
+(numbered by descending fit size) or a tracked id for a dropped one (numbered by the centroid value of the rule that drops it); a row of a category takes the id of its category; a row below the floor is -1; an eligible fund with a required
 clustering feature missing is -2. `cluster.labels` in `configs/cluster.yml` names the ids.
 A row is due when its `cluster` is null, it has a profile (`category`) and `period` plus the label delay has passed.
 """

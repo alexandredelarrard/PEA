@@ -44,7 +44,7 @@ _CLEAN_COLUMNS = ["cik", "period", "kind", "key", "ticker", "cusip", "issuer_nam
 
 
 def read_lines(store: DataStore, ciks: Sequence[str], periods: Sequence[pd.Timestamp]) -> pd.DataFrame:
-    """Markers and lines of `ciks` over `periods`, read on the primary key in CIK chunks (the table has no period index)."""
+    """Markers and lines of `ciks` over `periods`, read on the primary key in CIK chunks."""
     # `iter_load` streams one scope; this read is one bounded load per CIK chunk, which it cannot express.
     chunk = 1_000
     stamps = [period.strftime("%Y-%m-%d") for period in periods]

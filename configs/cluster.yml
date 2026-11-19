@@ -40,6 +40,7 @@ cluster:
     insurance:     {id: 8,  features: [net_breadth, new_position_rate, net_share_flow, top10_chg, rank_gap, rank_gap_chg, stickiness, flow_x_vol], min_holders: 4}  # insurers, id 8
     broker_dealer: {id: 9,  features: [net_breadth, new_position_rate, net_share_flow, top10_chg], min_holders: 5}  # broker-dealers, id 9
     pension:       {id: 10, features: [net_breadth, new_position_rate, net_share_flow, top10_chg], min_holders: 4}  # pension funds, id 10
+  # The fund names (ids 0-6 and 11-13) and their centroid values describe the saved fit e8902b2797034b31: re-read them after every refit.
   labels:                    # the name behind every stored `cluster` id; features: true = the cube builds feature columns for it (the `clusters` block); the code reads ids, tracked ids and rules, names are for people
     - {id: -2, name: not_computable, features: false}    # fund at or above the size floor with a required clustering feature null (turnover alone is optional)
     - {id: -1, name: below_size_floor, features: false}  # any row below fit_filters (positions or book), whatever its category

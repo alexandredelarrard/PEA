@@ -55,7 +55,7 @@ data:
       overlap:
         method: days
         column: date
-        days: 30
+        days: 90
       pit:
         column: date
         lag_days: 1

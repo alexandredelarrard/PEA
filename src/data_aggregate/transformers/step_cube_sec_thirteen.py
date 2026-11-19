@@ -144,6 +144,7 @@ class StepCubeSecThirteen(Step):
 
     def _plan(self) -> Plan | None:
         """The window, the quarters to compute and the saved rows to carry; raises before any quarter is read when the part cannot be extended."""
+        
         # config: the validated clusters and their cube columns; the column budget warns above its limits
         cfg = self._config.cluster
         validate_cluster_config(cfg)

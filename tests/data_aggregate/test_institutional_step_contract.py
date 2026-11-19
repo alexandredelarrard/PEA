@@ -176,6 +176,10 @@ def test_finra_tenure_reads_only_observed_fallback_once(sqlite_store: Any, monke
     """AAA has no FTD line: its FINRA symbols OLD (predecessor window CIK 123 until 01-03) and NEW (CIK 456 after) map
     through the lineage; OTHER is no AAA symbol."""
     idx = pd.date_range("2024-01-02", periods=3)
+    # Source dates stay Jan 2-4; Jan 5 is the next actual market session for lag1.
+    calendar = idx.union(pd.DatetimeIndex(["2024-01-05"]))
+    ctx = context(sqlite_store, Path("."))
+    ctx.run = WindowRun("incremental", "FINRA publication fixture", calendar[-1])
     sqlite_store.save(
         Tables.sec_short_volume_security,
         pd.DataFrame(
@@ -207,7 +211,7 @@ def test_finra_tenure_reads_only_observed_fallback_once(sqlite_store: Any, monke
 
     monkeypatch.setattr(sqlite_store, "iter_load", capture)
     _, observed = institutional_step.institutional_inputs.load_short_volume(
-        context(sqlite_store, Path(".")), ["AAA"], market_lines(["AAA"], idx[0]).iloc[:0], lineage, None, idx
+        ctx, ["AAA"], market_lines(["AAA"], idx[0]).iloc[:0], lineage, None, calendar
     )
     support = institutional_step.short_flow._proven_tenure_mask(idx, pd.Index(["AAA"]), None, observed)
     assert support["AAA"].tolist() == [True, False, True]

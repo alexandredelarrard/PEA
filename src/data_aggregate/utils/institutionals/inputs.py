@@ -25,7 +25,7 @@ from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from src.utils.data_policy import publication_policy, source_read_window
 from src.utils.identity_tables import read_identity
-from src.utils.publication import point_in_time
+from src.utils.publication import market_days, point_in_time
 from src.utils.security_series import LINE_COLUMNS, SHORT_LINE_COLUMNS, fails_series, load_fails_basis, prepare_master, short_volume_series
 from src.utils.string import pad_cik, yahoo_symbol
 from src.utils.window import Window
@@ -71,6 +71,7 @@ def load_short_volume(
         return None, None
 
     stored = point_in_time(stored, context.config, Tables.sec_short_volume_security, calendar)
+    stored["date"] = market_days(stored["date"])
 
     # Every company's series retains the eligibility of the source rows supplying that date.
     series, fallback = short_volume_series(stored, lines, lineage, universe)

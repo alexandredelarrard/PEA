@@ -94,7 +94,9 @@ dag = DAG(
 
 def run(cmd: str, base: str = AGG, pool: str = "aggregate", task_id: str | None = None) -> BashOperator:
     cutoff = f' --as-of "{RUN_AS_OF}" {RUN_MODE}' if base == AGG else ""
-    receipts = "{{ ti.xcom_pull(task_ids=" + repr([name.replace("-", "_") for name in CHAIN]) + ") | tojson }}"
+    # xcom_pull returns None for a part task that failed or pushed nothing; only successful receipts are handed over, and
+    # assembly itself refuses a selected part that has none.
+    receipts = "{{ ti.xcom_pull(task_ids=" + repr([name.replace("-", "_") for name in CHAIN]) + ") | select | list | tojson }}"
     return BashOperator(
         task_id=task_id or cmd.split()[0].replace("-", "_"),
         bash_command=f"{base} {cmd} -c {CONFIGS}{cutoff}",

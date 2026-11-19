@@ -51,6 +51,20 @@ def _pipeline_configuration(context: Context) -> str:
     return hashlib.sha256(json.dumps(definitions, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
+def _root_run_mismatch(record: object, context: Context) -> str | None:
+    """The first way a receipt is not a well-formed result of this root run, or None."""
+    if not isinstance(record, dict) or not isinstance(record.get("parts"), dict):
+        return f"is not a receipt object: {str(record)[:80]}"
+    if set(record) != {"as_of", "instant", "mode", "configuration", "parts"}:
+        return f"has fields {sorted(record)}"
+    for key, expected in (("as_of", context.run.as_of), ("instant", context.run.instant)):
+        if pd.Timestamp(record[key]) != expected:
+            return f"{key} {record[key]} != {expected.isoformat()}"
+    if record["mode"] != context.run.mode:
+        return f"mode {record['mode']} != {context.run.mode}"
+    return None
+
+
 def read_receipts(context: Context, payload: str) -> dict[Table, Window]:
     """Validate component dates, complete key scope and the exact common root cutoff."""
     receipts = json.loads(payload)
@@ -58,17 +72,9 @@ def read_receipts(context: Context, payload: str) -> dict[Table, Window]:
         raise ValueError("Component receipts must be a nonempty list of successful upstream results")
     records = [json.loads(receipt) if isinstance(receipt, str) else receipt for receipt in receipts]
     configuration = _pipeline_configuration(context)
-    fields = {"as_of", "instant", "mode", "configuration", "parts"}
-    if any(
-        not isinstance(record, dict)
-        or set(record) != fields
-        or not isinstance(record.get("parts"), dict)
-        or pd.Timestamp(record["as_of"]) != context.run.as_of
-        or pd.Timestamp(record["instant"]) != context.run.instant
-        or record["mode"] != context.run.mode
-        for record in records
-    ):
-        raise ValueError("A component receipt is missing or belongs to another root run or mode")
+    for position, record in enumerate(records):
+        if (reason := _root_run_mismatch(record, context)) is not None:
+            raise ValueError(f"A component receipt is missing or belongs to another root run or mode: receipt {position} {reason}")
     if any(record["configuration"] != configuration for record in records):
         raise ValueError("Component receipt belongs to another data pipeline configuration")
 

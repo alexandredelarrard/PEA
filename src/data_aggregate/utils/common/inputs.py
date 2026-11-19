@@ -49,6 +49,11 @@ def source_read_scope(context: Context, table: Table, window: Window | None) -> 
     return {"where": {clock: selected}}
 
 
+def scope_summary(filters: dict[str, object]) -> dict[str, object]:
+    """The read scope for the log: a list-valued filter (tickers, archive periods) shows its size, never its members."""
+    return {key: f"{len(value)} value(s)" if isinstance(value, Sequence) and not isinstance(value, str) else value for key, value in filters.items()}
+
+
 def load_source(
     context: Context,
     table: Table,
@@ -65,7 +70,7 @@ def load_source(
     filters: dict[str, object] = {table.ticker_col: sorted(set(selected))} if table.ticker_col else {}
     scope = source_read_scope(context, table, window)
     filters.update(scope.pop("where", {}))
-    logger.info("Input read %s: window=%s; scope=%s; clock bounds=%s", table.name, window or "full stored history", filters, scope)
+    logger.info("Input read %s: window=%s; scope=%s; clock bounds=%s", table.name, window or "full stored history", scope_summary(filters), scope)
     chunks = list(context.store.iter_load(table, project=columns is None, columns=columns, where=filters, markers=markers, **scope))
     df = pd.concat(chunks, ignore_index=True) if chunks else None
     if df is None or df.empty:

@@ -220,3 +220,15 @@ def test_ownership_null_history_preserves_full_subject_reference(ownership_histo
         f"SANITY: {case.table.name} null input matches full subject filtering with {len(case.df_source)} genuine stored rows; "
         "old identity markers change classification, naturally short history is valid, and the planned write stays30CD."
     )
+
+
+def test_input_read_log_gives_scope_sizes_not_members(sqlite_store: DataStore, caplog: pytest.LogCaptureFixture) -> None:
+    sqlite_store.save(Tables.prices_macro, pd.DataFrame({"ticker": "market", "date": pd.to_datetime(["2026-11-16"]), "close": 100.0}))
+    context = SimpleNamespace(
+        config=fixture_config(), store=sqlite_store, universe=universe_of(["AAPL"]), run=WindowRun("incremental", "test", pd.Timestamp("2026-11-16"))
+    )
+    with caplog.at_level("INFO"):
+        load_source(context, Tables.prices_macro, ["market", "AAPL", "MSFT"], columns=["ticker", "date", "close"])  # type: ignore[arg-type]
+    line = next(record.getMessage() for record in caplog.records if record.getMessage().startswith("Input read"))
+    assert "3 value(s)" in line and "MSFT" not in line
+    print(f"SANITY: the read log shows the ticker scope as a count, no member names: {line}")

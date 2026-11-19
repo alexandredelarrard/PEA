@@ -416,8 +416,8 @@ data:
         def14a_executive_comp: null
         sec_short_volume_security: 750
         sec_fails_to_deliver_security: 750
-        sec_13d: 750
-        sec_13g: 750
+        sec_13d: null
+        sec_13g: null
         universe_cusip: null
         universe_cik_symbol: null
         prices: 750

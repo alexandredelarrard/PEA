@@ -235,6 +235,10 @@ class StepCubeInstitutionals(Step):
     def _ownership_panel(
         self, frames: PriceFrames, lines: pd.DataFrame | None, lineage: pd.DataFrame | None, windows: dict[Table, Window | None]
     ) -> pd.DataFrame | None:
+        # Subject classification uses all retained filings, beyond the rolling count window.
+        for table in (Tables.sec_13d, Tables.sec_13g):
+            if windows[table] is not None:
+                raise ValueError(f"{Tables.cube_part_institutionals.name}/{table.name}: full subject-classification history requires null warmup")
         last_session = pd.DatetimeIndex(frames.trading_index).max() if len(frames.trading_index) else None
 
         # Load the two schedules and independent global completeness frontiers.

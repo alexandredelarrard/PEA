@@ -17,6 +17,8 @@ from src.constants.constants_price import DAILY_MACRO_LEVELS, MACRO_CUBE_FACTORS
 from src.context import Context
 from src.data_aggregate.transformers import step_cube_target as target_step
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
+from src.data_aggregate.utils.target.betas import estimate_all_betas
+from src.data_aggregate.utils.target.factors import assemble_factor_panel
 from src.data_store.schema import Table, Tables
 from src.data_store.store import DataStore
 from src.utils.db import get_engine
@@ -117,8 +119,8 @@ def test_macro_loader_normalizes_dates_without_changing_scope_or_factors(
     [
         (0, ["2026-11-06", "2026-11-09", "2026-11-10"], 200.0),
         (1, ["2026-11-09", "2026-11-10", "2026-11-11"], 100.0),
-        (2, ["2026-11-09", "2026-11-11", "2026-11-12"], 0.0),
-        (3, ["2026-11-09", "2026-11-12", "2026-11-13"], 0.0),
+        (2, ["2026-11-10", "2026-11-11", "2026-11-12"], float("nan")),
+        (3, ["2026-11-11", "2026-11-12", "2026-11-13"], float("nan")),
     ],
     ids=["lag-0", "lag-1", "lag-2", "lag-3"],
 )
@@ -150,11 +152,32 @@ def test_macro_loader_consumes_publication_lag(sqlite_store: DataStore, lag_days
     commodity, _ = step._asset_factors(df_macro, calendar)
     assert commodity["gold"].loc["2026-11-10"] == 1.0
     assert commodity["oil"].loc["2026-11-10"] == 1.0
-    assert step._macro_changes(df_macro, calendar).loc["2026-11-10", "d_vix"] == november_10_change
+    actual_change = step._macro_changes(df_macro, calendar).loc["2026-11-10", "d_vix"]
+    assert pd.isna(actual_change) if pd.isna(november_10_change) else actual_change == november_10_change
     assert OmegaConf.to_container(context.config, resolve=True) == original_config
     print(
         f"SANITY: lag={lag_days}; SPY/gold/oil stay on source sessions; all other consumed series follow config; fills and caller config preserved."
     )
+
+
+def test_macro_session_lag_preserves_changes_across_weekend_and_holiday(sqlite_store: DataStore) -> None:
+    """Thanksgiving and the weekend consume no lag sessions or daily changes."""
+    context = _context(sqlite_store, "2026-12-02")
+    calendar = pd.DatetimeIndex(["2026-11-24", "2026-11-25", "2026-11-27", "2026-11-30", "2026-12-01", "2026-12-02"], name="date")
+    context.store.create_declared(Tables.prices_macro)
+    context.store.save(
+        Tables.prices_macro,
+        pd.DataFrame({"date": calendar[:4], "ticker": "vix", "close": [10.0, 11.0, 13.0, 16.0]}),
+    )
+    step = object.__new__(StepCubeTarget)
+    step._context, step._config = context, context.config
+
+    actual = step._load_macro(calendar, Window(calendar[0], calendar[-1]))
+
+    pd.testing.assert_index_equal(actual.index, calendar[2:])
+    assert actual["vix"].tolist() == [10.0, 11.0, 13.0, 16.0]
+    assert step._macro_changes(actual, calendar)["d_vix"].dropna().tolist() == [1.0, 2.0, 3.0]
+    print("SANITY: two retained sessions skip Thanksgiving/weekend; every daily change survives exactly, with no collision or artificial zero.")
 
 
 def test_macro_publication_preserves_latest_quotes_and_mixed_operands(
@@ -212,17 +235,18 @@ def test_macro_publication_preserves_latest_quotes_and_mixed_operands(
     df_prepared = pd.concat(prepared, ignore_index=True)
     pd.testing.assert_series_equal(df_prepared["date"], df_prepared["_source_date"], check_names=False)
     assert not df_prepared.duplicated(["date", "ticker"]).any()
-    assert set(df_prepared.loc[df_prepared["date"] == date(2026, 7, 10), "ticker"]) == {MACRO_MARKET_SERIES, "oil"}
+    assert set(df_prepared.loc[df_prepared["date"] == date(2026, 7, 10), "ticker"]) == {MACRO_MARKET_SERIES, "oil", "vix", "fx_usdeur"}
     pd.testing.assert_index_equal(df_macro.index, calendar[[0, 1, 2, 5]])
     assert df_macro[MACRO_MARKET_SERIES].dropna().tolist() == [100.0, 140.0, 150.0]
-    assert df_macro["vix"].dropna().tolist() == [9.0, 13.0, 14.0]
+    assert df_macro["vix"].dropna().tolist() == [10.0, 14.0]
+    assert pd.isna(df_macro.loc["2026-07-10", "vix"])
     expected_returns = pd.Series([float("nan"), 140.0 / 100.0 - 1, 0.0, 0.0, 0.0, 150.0 / 140.0 - 1], index=calendar)
     pd.testing.assert_series_equal(step._market_return(df_macro, calendar), expected_returns, check_names=False)
     commodity, currency = step._asset_factors(df_macro, calendar)
     pd.testing.assert_series_equal(commodity["oil"], expected_returns, check_names=False)
-    expected_fx = pd.Series([float("nan"), 130.0 / 90.0 - 1, 140.0 / 130.0 - 1, 0.0, 0.0, 0.0], index=calendar)
+    expected_fx = pd.Series([float("nan"), float("nan"), 140.0 / 100.0 - 1, 0.0, 0.0, 0.0], index=calendar)
     pd.testing.assert_series_equal(currency["USD/EUR"], expected_fx, check_names=False)
-    assert step._macro_changes(df_macro, calendar)["d_vix"].iloc[1:].tolist() == [4.0, 1.0, 0.0, 0.0, 0.0]
+    assert step._macro_changes(df_macro, calendar)["d_vix"].iloc[2:].tolist() == [4.0, 0.0, 0.0, 0.0]
     print(
         "SANITY: one scoped payload, PIT once per row, raw clocks retained, invalid/future eligibility excluded, latest collisions and mixed fills correct."
     )
@@ -273,7 +297,7 @@ def test_macro_publication_default_is_two_days() -> None:
     print("SANITY: production macro lag is 2; estimated-beta forward-fill stays 21 rows.")
 
 
-@pytest.mark.parametrize(("since", "until"), [("2012-12-01", "2013-01-31"), ("2026-10-01", "2026-11-19")])
+@pytest.mark.parametrize(("since", "until"), [("1995-11-13", "2026-11-19"), ("2012-12-01", "2013-01-31"), ("2026-10-01", "2026-11-19")])
 def test_macro_loader_real_sources_follow_selective_lag(sqlite_store: DataStore, since: str, until: str) -> None:
     """Replay a bounded read-only real snapshot through candidate and zero-lag controls."""
     # Load the projected live payload once; all replay writes use disposable SQLite.
@@ -296,7 +320,7 @@ def test_macro_loader_real_sources_follow_selective_lag(sqlite_store: DataStore,
     for ticker in series:
         df_quotes = df_source.loc[df_source["ticker"] == ticker].sort_values("date")
         lag = 0 if ticker in (MACRO_MARKET_SERIES, "gold", "oil") else 2
-        positions = calendar.searchsorted(pd.to_datetime(df_quotes["date"]) + pd.Timedelta(days=lag))
+        positions = calendar.searchsorted(pd.to_datetime(df_quotes["date"])) + lag
         valid = positions < len(calendar)
         expected = pd.Series(df_quotes.loc[valid, "close"].to_numpy(), index=calendar.take(positions[valid])).groupby(level=0).last().dropna()
         pd.testing.assert_series_equal(df_actual[ticker].dropna(), expected, check_names=False, check_exact=True)
@@ -309,6 +333,21 @@ def test_macro_loader_real_sources_follow_selective_lag(sqlite_store: DataStore,
     actual_commodities, _ = step._asset_factors(df_actual, calendar)
     control_commodities, _ = step._asset_factors(df_control, calendar)
     pd.testing.assert_frame_equal(actual_commodities, control_commodities, check_exact=True)
+    actual_changes = step._macro_changes(df_actual, calendar)
+    control_changes = step._macro_changes(df_control, calendar)
+    pd.testing.assert_frame_equal(actual_changes, control_changes.shift(2), check_exact=True)
+    if since == "1995-11-13":
+        _, currency = step._asset_factors(df_actual, calendar)
+        market = step._market_return(df_actual, calendar)
+        panel, macro_cols = assemble_factor_panel(market, pd.DataFrame(index=calendar), actual_commodities, currency, actual_changes)
+        assert set(macro_cols) == set(DAILY_MACRO_LEVELS.values())
+        betas = estimate_all_betas(market.to_frame("SPY"), panel, window=63, min_obs=40, step=21)
+        expected_betas = [f"beta_{name}" for name in macro_cols]
+        assert betas["SPY"][expected_betas].notna().all(axis=1).any()
+        for name in macro_cols:
+            zero_frac = actual_changes[name].dropna().abs().lt(1e-12).mean()
+            assert zero_frac <= 0.30
+            print(f"SANITY: {name}: {zero_frac:.2%} unchanged sessions; retained in final panel and fitted betas.")
     pd.testing.assert_frame_equal(df_source, frozen, check_exact=True)
     assert context.config.data.tables[Tables.prices_macro.name].pit.lag_days == 2
     print(

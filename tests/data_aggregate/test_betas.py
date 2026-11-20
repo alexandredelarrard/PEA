@@ -445,7 +445,7 @@ def test_target_persistence_filters_betas_to_price_keys(sqlite_store: DataStore)
 
     for mode in ("full", "incremental"):
         window = window_plan(Window(dates[0], dates[-1]), scope=("AAA",), mode=mode, frontier=dates[-1])
-        step._persist(labels, {"AAA": beta, "GHOST": beta}, (window, window), valid_keys)
+        step._persist(labels, {"AAA": beta, "GHOST": beta}, {Tables.cube_part_targets: window, Tables.cube_part_betas: window}, valid_keys)
         persisted = sqlite_store.load(Tables.cube_part_betas, columns=["date", "ticker", "beta_market"]).sort_values("date")
         assert pd.to_datetime(persisted["date"]).tolist() == [dates[1], dates[3], dates[4]]
         assert persisted["ticker"].tolist() == ["AAA"] * 3

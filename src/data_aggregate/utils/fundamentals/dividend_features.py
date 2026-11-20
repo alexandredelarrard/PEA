@@ -19,6 +19,8 @@ from src.data_aggregate.utils.price.frames import PriceFrames, comparison_share_
 _YOY = 252  # ~1 trading year: the level TTM and the buyback comparison
 _CALENDAR_YEAR_DAYS = 365  # the growth horizon, in calendar days
 _QUARTERLY_MAX_AGE_DAYS = 185
+_COVERAGE_BOUNDS = (-5.0, 20.0)  # FCF / dividends: beyond 20x is "very safe", below -5x is "FCF deeply negative"
+_GROWTH_CAP = 4.0  # one-year dividend growth is capped at +400%; the floor is the natural -100%
 DIVIDEND_TRANSFORM_SEMANTICS = {"dividend_payer": "binary"}
 
 
@@ -113,7 +115,7 @@ def _dividend_fields(dividends_hist: pd.DataFrame, prices: PriceFrames, history:
     if not div_paid.empty:
         g1 = g1.combine_first(sanitize(div_paid / _calendar_prior(div_paid, _CALENDAR_YEAR_DAYS).where(lambda x: x > 0)) - 1.0)
         g5 = g5.combine_first(_cagr(div_paid, 5))
-    F["dividend_growth"] = g1.replace([np.inf, -np.inf], np.nan)
+    F["dividend_growth"] = g1.replace([np.inf, -np.inf], np.nan).clip(lower=-1.0, upper=_GROWTH_CAP)
     F["dividend_growth_5y"] = g5
 
     F["dividend_payer"] = payer.astype("float64").where(listed)
@@ -121,7 +123,7 @@ def _dividend_fields(dividends_hist: pd.DataFrame, prices: PriceFrames, history:
     if not total.empty and not net_income.empty:
         F["dividend_payout_ratio"] = sanitize(total / net_income.where(net_income > 0)).clip(lower=0.0, upper=3.0)
     if not total.empty and not fcf.empty:
-        F["dividend_coverage"] = sanitize(fcf / total.where(total > 0))
+        F["dividend_coverage"] = sanitize(fcf / total.where(total > 0)).clip(lower=_COVERAGE_BOUNDS[0], upper=_COVERAGE_BOUNDS[1])
 
     if fundamentals is not None:
         df_comparison = comparison_share_history(

@@ -32,11 +32,12 @@ def run_per_ticker[R](
     max_workers: int | None = None,
     key_cols: Sequence[str] = ("ticker", "cik"),
 ) -> list[R | None]:
-    """Call `worker(*row[key_cols])` for every row of `df_scope` on a bounded pool.
+    """Call `worker(*row[key_cols])` for each row, serially when `max_workers=1`.
 
-    Returns results in `df_scope` row order. `PROGRAMMING_ERRORS` abort the pool; any other
+    Returns results in `df_scope` row order. `PROGRAMMING_ERRORS` escape; any other
     exception is logged as a warning keyed on the row's first key column and yields None."""
 
+    # Guard source failures while letting programming errors fail the run.
     def _guarded(key: Any, *args: Any) -> R | None:
         try:
             return worker(key, *args)
@@ -46,7 +47,10 @@ def run_per_ticker[R](
             logger.warning("%s: %s failed (%s)", desc, key, exc)
             return None
 
+    # Preserve scope order, using synchronous work when only one worker is requested.
     rows = list(df_scope[list(key_cols)].itertuples(index=False, name=None))
+    if max_workers == 1:
+        return [_guarded(*row) for row in tqdm(rows, desc=desc)]
     with ThreadPoolExecutor(max_workers=DEFAULT_WORKERS if max_workers is None else max_workers) as pool:
         futures = [pool.submit(_guarded, *row) for row in rows]
         for future in tqdm(as_completed(futures), total=len(futures), desc=desc):

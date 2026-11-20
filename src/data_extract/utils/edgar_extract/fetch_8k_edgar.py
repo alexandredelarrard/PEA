@@ -1,12 +1,7 @@
-"""
-fetch_8k_edgar.py (src/data_extract/utils/edgar_extract/fetch_8k_edgar.py)
-------------------------------------------------------------------------
-SEC Form 8-K filings -> `sec_8k`, one row per (ticker, accession, item code).
-Item codes come from EDGAR's submissions metadata (the issuer's `Company` listing, read only for
-keys with documents to fetch); `has_earnings` / `has_press_release` and the per-item text come from
-edgartools' typed `CurrentReport` (`sec_io.filing_obj`). A filing with no item code becomes an
-empty-filing marker. A transient SEC failure raises and fails the filing; a parse failure keeps a
-best-effort row. Financial statements in attached earnings releases are out of scope.
+"""SEC 8-K rows at (ticker, accession, item), using submissions metadata and CurrentReport text.
+Bounded Item 5.07 bodies and explicitly referenced voting exhibits supplement the structured slices.
+Unresolved metadata and transient reads remain pending; parse failures retain best-effort item rows.
+Resolved filings with no reported items become empty markers; attached earnings statements are out of scope.
 """
 
 from __future__ import annotations
@@ -20,8 +15,10 @@ from typing import Any, cast
 import pandas as pd
 
 from src.data_extract.utils.common import sec_io
-from src.data_extract.utils.common.sec_io import TransientReadError, filing_obj, filing_text
+from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_obj, filing_text
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
+from src.data_extract.utils.edgar_extract.html_text import html_to_text
+from src.data_extract.utils.edgar_extract.item_carve import carve_spans
 from src.data_extract.utils.structure.votes.guard import has_vote_table
 from src.data_store.schema import Resume, Tables
 
@@ -79,32 +76,8 @@ _HIGH_SIGNAL_ITEMS = {
     "9.01": "financial_statements_and_exhibits",
 }
 
-_RESULTS_FOLLOW_RE = re.compile(
-    r"(?is)\b(?:results?|votes?)\b.{0,160}\b(?:below|following|as follows|set forth)\b"
-    r"|\b(?:below|following)\b.{0,160}\b(?:results?|votes?)\b"
-)
-_ITEM_507_HEADING_RE = re.compile(r"(?im)^\s*Item\s+5\.07\b[^\n]*")
-_NEXT_8K_SECTION_RE = re.compile(r"(?im)^\s*(?:Item\s+(?!5\.07\b)\d\.\d{2}\b[^\n]*|SIGNATURES?)\s*$")
-
-
-def _recover_item_507_from_primary(filing: Any, item_text: str) -> str:
-    """Replace a table-less Item 5.07 slice that announces results "below" with the longer
-    primary-document section, only when that section has a vote table; else keep it unchanged.
-    """
-    if not _RESULTS_FOLLOW_RE.search(item_text) or has_vote_table(item_text):
-        return item_text
-    try:
-        primary_text = str(filing_text(filing) or "")
-    except TransientReadError:
-        raise
-    except Exception:  # noqa: BLE001 -- best-effort filing recovery
-        return item_text
-    for heading in _ITEM_507_HEADING_RE.finditer(primary_text):
-        following = _NEXT_8K_SECTION_RE.search(primary_text, heading.end())
-        candidate = primary_text[heading.start() : following.start() if following else len(primary_text)].strip()
-        if len(candidate) > len(item_text) and has_vote_table(candidate):
-            return candidate
-    return item_text
+_ITEM_507_HEADING_RE = re.compile(r"(?im)^[ \t]*(?:i\s*tems?[.\s–—-]*5\.07(?!\d)[.:\t ]*|5\.07[ \t.:–—-]+)")
+_NEXT_8K_SECTION_RE = re.compile(r"(?im)^[ \t]*(?:i\s*tem[.\s]*\d\.\d{2}\b|\d\.\d{2}[ \t]*[-–—]|SIGNATURES?\b)")
 
 
 def _item_text(obj: Any, item_code: str) -> Any:
@@ -118,15 +91,13 @@ def _item_text(obj: Any, item_code: str) -> Any:
 
 
 def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
-    """One 8-K -> one row per item code. A failed parse keeps the item rows with both flags NaN
-    (not None, so a cold table never infers the column as TEXT); a transient read raises."""
+    """One row per reported item, supplementing voting slices from the primary and referenced exhibits.
+    Failed CurrentReport parsing retains item rows with NaN flags; failed source reads remain pending."""
+    # Read the primary once; a blank structured slice or incomplete metadata cannot prove no voting results.
     filing = stamp.filing
-    # Item codes come off the filing index, read before the parse so a code-less filing skips it.
-    items = getattr(filing, "items", "") or ""
-    item_list = [i.strip() for i in str(items).split(",") if i.strip()]
-    if not item_list:
-        return []
-
+    if not hasattr(filing, "items"):
+        raise ParseFailureError(f"{stamp.accession_number}: 8-K item metadata was not resolved")
+    primary_text = str(filing_text(filing) or "")
     has_earnings = has_press_release = float("nan")
     obj = None
     try:
@@ -138,6 +109,33 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
     except Exception:  # noqa: BLE001 -- best-effort only (a parse failure or a missing flag)
         pass
 
+    # Keep internal proposal headings inside the bounded Item 5.07 body.
+    item_list = [item.strip() for item in str(filing.items or "").split(",") if item.strip()]
+    item_texts = {item: _item_text(obj, item) for item in item_list}
+    sections = [primary_text[start:end].strip() for start, end in carve_spans(primary_text, _ITEM_507_HEADING_RE, (_NEXT_8K_SECTION_RE,))]
+    tables = [section for section in sections if has_vote_table(section)]
+    primary_vote = max(tables or sections, key=len, default="")
+    vote_text = primary_vote if tables else str(item_texts.get("5.07") or primary_vote)
+
+    # Follow explicit EX-99 voting supplements, excluding plan and charter documents.
+    references = {f"EX-{number}" for number in re.findall(r"\bexhibits?\s+(99\.\d+)\b", primary_vote or vote_text, re.I)}
+    attachments = sec_io.filing_attachments(filing) if references else ()
+    exhibits = []
+    for attachment in attachments or ():
+        kind = str(attachment.document_type or "").strip().upper()
+        if kind not in references or attachment.is_binary():
+            continue
+        raw = sec_io.sec_call(getattr, attachment, "content", label=f"{stamp.accession_number} {kind}")
+        text = html_to_text(raw or "")
+        if has_vote_table(text):
+            exhibits.append(f"Exhibit {kind.removeprefix('EX-')} ({attachment.document})\n{text}")
+    if exhibits:
+        vote_text = "\n\n".join([primary_vote or vote_text, *exhibits])
+    if primary_vote and "5.07" not in item_list:
+        item_list.append("5.07")
+    item_texts["5.07"] = vote_text
+
+    # Preserve the filing's identifiers, publication time and flags for every item row.
     base = {
         "ticker": ticker,
         # The filing registrant's CIK (not the roster's), so a registrant boundary stays visible; the raw filing time.
@@ -149,22 +147,18 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
         "primary_document": stamp.primary_document,
     }
 
-    rows = []
-    for item_code in item_list:
-        item_text = _item_text(obj, item_code)
-        if item_code == "5.07":
-            item_text = _recover_item_507_from_primary(filing, str(item_text or ""))
-        rows.append(
-            {**base, "item": item_code, "item_tag": _HIGH_SIGNAL_ITEMS.get(item_code, "other_unclassified_item"), "item_text": item_text or ""}
-        )
-    return rows
+    # Emit one row per reported item, keeping unavailable body text empty.
+    return [
+        {**base, "item": item, "item_tag": _HIGH_SIGNAL_ITEMS.get(item, "other_unclassified_item"), "item_text": item_texts[item] or ""}
+        for item in item_list
+    ]
 
 
 def submission_filings(ticker: str, df_units: pd.DataFrame) -> dict[str, Any]:
     """The listed 8-Ks as edgartools `EntityFiling`s (item codes, primary document), by accession.
 
     One `Company` listing per CIK holding listed units; an unresolvable CIK is warned and its units
-    fall back to the plain index filing. A transient SEC failure raises."""
+    fall back to the plain index filing, whose missing item metadata keeps it pending. A transient SEC failure raises."""
     wanted = set(df_units["accession"].astype(str))
     out: dict[str, Any] = {}
     for cik in df_units["cik"].astype(str).unique():
@@ -184,7 +178,7 @@ def submission_filings(ticker: str, df_units: pd.DataFrame) -> dict[str, Any]:
         )
     if missing := sorted(wanted - out.keys()):
         logger.warning(
-            "8-K: %s %d indexed filing(s) absent from the submissions listing, read without item codes: %s",
+            "8-K: %s %d indexed filing(s) absent from the submissions listing, kept pending: %s",
             ticker,
             len(missing),
             ", ".join(missing[:20]),

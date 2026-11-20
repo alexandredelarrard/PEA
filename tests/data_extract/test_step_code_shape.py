@@ -116,17 +116,27 @@ LLM_TEXT = Flow(
     workers=(f"{_EMPLOYEES}._ticker_employees",),
     run_order=("run_def14a_llm", "run_8k_votes", "run_employees_llm"),
 )
+VOTES = Flow(
+    name="votes",
+    step_module=LLM_TEXT.step_module,
+    step_class="StepExtractLlm",
+    roots=("run_8k_votes",),
+    scope=("src.data_extract.utils.structure.votes.fetch",),
+    workers=("src.data_extract.utils.structure.votes.fetch._extract_ticker",),
+)
 FLOWS = (IDENTITY, EDGAR_TEXT, LLM_TEXT)
 #: Domain modules of the text flows: every function keeps the per-function contract, reached or not, except the
 #: `Tables.<x>` literal rule (D-06: the DEF 14A modules store through the `SECTIONS` registry tables). Their depth is
 #: counted in the chains the depth gate walks.
 DOMAIN_MODULES = (
+    *(f"src.data_extract.utils.structure.votes.{name}" for name in ("guard", "flatten", "roles")),
     f"{_EDGAR}employee_document",
     "src.data_extract.utils.fundamentals.employee_guard",
     *(f"{_DEF14A}{name}" for name in ("work", "postprocess", "basis", "carve", "holders", "retry", "gender")),
 )
 #: The step-flow code of the text flows (the steps and their fetch/LLM orchestrators): held to depth 4.
 STEP_FLOW_MODULES = (
+    "src.data_extract.utils.structure.votes.fetch",
     EDGAR_TEXT.step_module,
     LLM_TEXT.step_module,
     f"{_EDGAR}fetch_employees_text",
@@ -154,9 +164,10 @@ _MODULES: dict[str, _Module | None] = {}
 
 
 def _module(name: str) -> _Module | None:
-    """The parsed module `name` (None outside `src` or when it is a package without a file)."""
+    """The parsed source module/package, or None outside src or when no source file exists."""
     if name not in _MODULES:
         path = REPO / Path(*name.split(".")).with_suffix(".py")
+        path = path if path.exists() else path.with_suffix("") / "__init__.py"
         _MODULES[name] = _parse(name, path) if name.startswith("src.") and path.exists() else None
     return _MODULES[name]
 
@@ -534,3 +545,21 @@ def test_every_step_flow_function_sits_at_depth_4() -> None:
     print("\n=== SANITY CHECK: the text step flows sit at depth <= 4 ===")
     print(f"  {len(flow)} step-flow function(s), deepest {max(d for d, _ in flow.values())}; 0 violations")
     print(f"  domain-module depth debt (wiki TODO): {debt} function(s) of {len(depth) - len(flow)} reached")
+
+
+def test_votes_flow_keeps_shape_and_depth() -> None:
+    """The exported vote entry point reaches one real level 3 worker and only flat level 4 leaves."""
+    assert all(_passed_to_run_per_ticker(worker) for worker in VOTES.workers)
+    depth, callees = _depths((VOTES,))
+    problems = []
+    for qualified, (level, chain) in depth.items():
+        module, name = _owner(qualified)
+        problems.extend(_shape(module, name, module.functions[name]))
+        if level > MAX_DEPTH or level == MAX_DEPTH and callees[qualified]:
+            problems.append(f"depth {level}: {' -> '.join(chain)}; counted callees={callees[qualified]}")
+    assert depth[VOTES.workers[0]][0] == 3
+    assert "src.data_extract.utils.structure.votes.fetch.fetch_8k_votes_llm" in depth
+    assert not problems, "\n".join(problems)
+    print(
+        f"SANITY: actual exported votes flow reaches {len(depth)} counted functions, worker 3, deepest {max(level for level, _ in depth.values())}; flat leaves and 0 shape violations."
+    )

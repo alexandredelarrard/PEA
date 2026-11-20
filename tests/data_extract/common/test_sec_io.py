@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import gc
 import io
+import json
 import re
 import tokenize
 import weakref
@@ -22,6 +23,7 @@ import edgar
 import httpx
 import pytest
 import requests
+from edgar.entity.submissions import create_entity_from_submissions_json
 from edgar.exceptions import TooManyRequestsError
 from edgar.sgml.sgml_header import FilingHeader
 from edgar.sgml.sgml_parser import SECHTMLResponseError
@@ -30,6 +32,7 @@ from omegaconf import OmegaConf
 from src.data_extract.utils.common import sec_io
 from src.data_extract.utils.common.sec_io import RetryPolicy, TransientReadError
 from src.data_extract.utils.edgar_extract import edgar_fillings as ef
+from src.data_store.schema import Resume, Tables
 
 _REPO = Path(__file__).resolve().parents[3]
 _URL = "https://www.sec.gov/Archives/edgar/data/1/000000000000000001/doc.htm"
@@ -354,6 +357,22 @@ def test_list_filings_raises_when_an_older_page_fails(monkeypatch: pytest.Monkey
         ef.list_filings(cast(Any, None), "1", ["DEF 14A"], "1990-01-01")
     print("\n=== SANITY CHECK: no silently short listing ===")
     print("  an older submissions page that cannot be read raises instead of being skipped.")
+
+
+@pytest.mark.parametrize("as_tuple", [True, False])
+def test_company_filings_keeps_captured_8k_forms(as_tuple: bool) -> None:
+    """Installed EdgarTools must filter the registered tuple like the equivalent list."""
+    source = json.loads((Path(__file__).parent / "fixtures/echo_submissions.json").read_text(encoding="utf-8"))
+    entity = create_entity_from_submissions_json(source, entity_type="company")
+    forms = cast(Resume, Tables.sec_8k.resume).forms
+
+    filings = sec_io.company_filings(entity, forms if as_tuple else list(forms))
+    targets = {filing.accession_number: filing.items for filing in filings}
+
+    assert len(filings) == 2
+    assert targets["0001415404-26-000057"] == "5.07,9.01"
+    assert {filing.form for filing in filings} == {"8-K", "8-K/A"}
+    print(f"\nSANITY: captured ECHO metadata: tuple={as_tuple}, two 8-K forms retained, target5.07/9.01 present;10-Q excluded.")
 
 
 def test_policy_defaults_match_the_config() -> None:

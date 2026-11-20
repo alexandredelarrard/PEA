@@ -27,7 +27,8 @@ def _sessions(trading_index: pd.DatetimeIndex) -> pd.DatetimeIndex:
 def filing_deadlines(periods: pd.DatetimeIndex, trading_index: pd.DatetimeIndex) -> pd.Series:
     """Report period -> the last day a filing counts for it: the 45-day deadline rolled to the next trading day, NaT past the calendar.
 
-    The one deadline of a quarter: the books keep the filings made on or before it and the publication clock starts from it.
+    All clusters share this cutoff; later filings remain excluded during the extra publication lag. Rolling uses the supplied market
+    sessions, an operational approximation rather than an independently maintained SEC business-day calendar.
     """
     index = pd.DatetimeIndex(periods).normalize()
     days = pd.Series(index + pd.Timedelta(days=FILING_DEADLINE_DAYS), index=index)
@@ -38,6 +39,7 @@ def publication_dates(periods: pd.DatetimeIndex, trading_index: pd.DatetimeIndex
     """Report period -> publication day, indexed by `periods`: the filing-deadline trading day taken as a `sec13f_hr` filing date and put through
     its configured `pit` (the lag in calendar days, then the first session on or after).
 
+    This is one logical snapshot per report quarter, not a job-execution schedule or a separate date for each manager's filing.
     A period whose publication day falls after the last trading day is NaT.
     """
     # compute: the shared deadline day as the source clock of the table, then its configured publication policy

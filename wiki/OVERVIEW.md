@@ -10,6 +10,7 @@ source_commit: b067ddc9b9fbde4b3094bb14f687b7dbdd6b34cc
 integration_parents:
   - f06e3781ccb5756a0a1406895182de37329e282b
   - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
+source_review_scope: Targeted 13F quality and documentation refresh; unrelated sections retain their dated evidence.
 ---
 # stock_pick_strat codebase wiki
 

@@ -1,12 +1,15 @@
 """Clean 13F VALUE per filing and per line against report-quarter-end as-traded prices.
 
 Source tables remain untouched. One power-of-ten unit factor per filing moves every monetary leg; each priced common line is then
-checked against the quote (`close_pit`, else a consensus price built from the other filings of the same security and quarter):
+checked against the quote (`close_pit`, else a consensus price from the supplied same-security, same-quarter filing pool):
 
 - inside the row band the filed line is kept;
 - outside it the leg that fails a plausibility test is rebuilt from the other and the quote (value = shares x quote, or
   shares = value / quote), a swapped value/shares line is treated the same way, and a line no rule can support is dropped;
-- a dropped or missing line never voids its book: a book is accepted when enough of its lines and of its cover total survive.
+- `book_ok` reports line/cover survival; callers decide whether to enforce it. The cluster/profile caller does not.
+
+A normal implied price does not verify absolute dollars or quantities when both legs have the same scale error. The cluster/profile
+caller uses two peer-only passes without cover/issuer limits; its later oversized-revaluation guard can remove a whole book.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ _VALUE_COLUMNS = ("value_usd", "call_value", "put_value", "debt_value", "other_v
 _MAX_PRICE_AGE_DAYS = 7
 #: The largest power-of-ten unit error a filing can carry (a thousand, as in the dollars/thousands change).
 _MAX_UNIT_POWER = 3
-#: A line whose value equals its share count within a thousand-dollar rounding (and within 0.1% of it) is a swapped column.
+#: Near-equal value and quantity flag a possible copied column; equality alone does not identify the wrong leg.
 _SWAP_ROUNDING = 500.0
 _SWAP_RELATIVE = 0.001
 #: A position above this share of the issuer's shares outstanding is not a plausible 13F line.
@@ -63,11 +66,11 @@ def repair_value_basis(
     consensus: pd.Series | None = None,
     limits: Mapping[str, pd.Series] | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Unit per filing, then every priced common line, then the book acceptance. Returns the repaired lines and the per-filing register.
+    """Repair units and priced common lines, then return the lines and per-filing survival diagnostics.
 
     `close` is report-period as-traded prices (`period_quotes` is the same lookup prepared once); `consensus` is a (period, cusip) price for
     securities `close` does not cover; `limits` may carry `mcap` and `shares_out` (period, ticker) series for the plausibility tests.
-    Source frames remain unchanged and repeat repair is idempotent.
+    Source frames remain unchanged and repeat repair is idempotent. `book_ok` is not an enforced filter here.
     """
     df_out = holdings.copy()
     if "value_basis_repaired" in df_out or df_out.empty:
@@ -98,14 +101,14 @@ def repair_value_basis(
     cover = _cover_dollars(df_out, scaled)
     _repair_common_lines(df_out, value, scaled, shares, reference, quote, common, cover, limits)
 
-    # Option legs use their own underlying quantities; then book acceptance.
+    # Option legs use their own underlying quantities; then record book-survival diagnostics.
     estimates = _estimate_option_legs(df_out, holdings, reference, common)
     _keep_sibling_exposures(df_out)
     return df_out, _repair_register(df_register, keys, df_out, value, estimates, common, cover, reference)
 
 
 def _swapped(common: pd.Series, value: pd.Series, shares: pd.Series) -> pd.Series:
-    """Common lines whose filed value equals their share count: the filer put one column in the other."""
+    """Flag near-equal filed VALUE and quantity as suspect, without proving which leg is wrong."""
     return common & shares.gt(0) & (value - shares).abs().le(np.minimum(_SWAP_ROUNDING, _SWAP_RELATIVE * shares))
 
 
@@ -250,6 +253,7 @@ def _repair_common_lines(
     allowed only while it stays under the issuer's market cap and the filing's cover total, and shares = value / reference, allowed
     only while it stays under the issuer's shares outstanding and the value under the cover total. Both allowed: the value is rebuilt
     from the quote. Neither: the line is dropped. A missing value is rebuilt from the quote, or the line stays unknown.
+    Missing cover/issuer limits leave those ceilings unbounded, so a wrong quantity can be converted into wrong VALUE.
     """
     limits = limits or {}
     mcap, shares_out = _lookup(df_out, limits.get("mcap")), _lookup(df_out, limits.get("shares_out"))
@@ -420,6 +424,7 @@ def _repair_register(
     df_totals["cover_ratio"] = df_totals["kept_raw"] / df_totals["cover_raw"].where(df_totals["cover_raw"].gt(0))
     rows_ok = df_totals["row_coverage"].fillna(1.0).ge(MIN_ROW_COVERAGE)
     cover_ok = df_totals["cover_ratio"].isna() | df_totals["cover_ratio"].ge(MIN_ROW_COVERAGE)
+    # This is diagnostic; a caller must enforce it, and later caller-side exclusions can reduce retention again.
     df_totals["book_ok"] = rows_ok & cover_ok
     df_register = df_register.merge(df_totals.reset_index(), on=keys, validate="one_to_one")
     df_rows = df_out[keys].merge(df_register[[*keys, "book_ok"]], on=keys, how="left", validate="many_to_one")
@@ -474,7 +479,7 @@ def unrealistic_lines(df_holdings: pd.DataFrame, limits: Mapping[str, pd.Series]
 
 
 def log_register(register: pd.DataFrame, value_before_total: float) -> None:
-    """One aggregated view of a cleaning run: percent of filings (books) and of lines per reason, never filing by filing."""
+    """Summarize diagnostics; 'rejected' labels describe `book_ok`, not whether the caller filters those books."""
     if register.empty:
         return
     books, lines = len(register), int(register["common_rows"].sum())

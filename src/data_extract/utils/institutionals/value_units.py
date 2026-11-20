@@ -1,4 +1,7 @@
-"""13F VALUE units: source declarations, and the per-filing evidence that decides the cell-to-USD factor."""
+"""Select a 13F cell-to-USD factor from source declarations and implied-price evidence, without certifying absolute quantities.
+
+A conflict with a declaration can be a justified override. Scaling VALUE and quantity together preserves the price and evades this test.
+"""
 
 from __future__ import annotations
 
@@ -42,7 +45,7 @@ NO_EVIDENCE = "no_evidence:assumed_x1"
 
 @dataclass(frozen=True)
 class ValueUnits:
-    """Keep prescribed and stated evidence separate; a conflict has no USD factor."""
+    """Keep prescribed and stated units separate from the selected factor and its evidence."""
 
     expected_factor: float | None
     stated_factor: float | None
@@ -137,7 +140,8 @@ def decide_value_units(
     `_MIN_PRICE_ROWS` share rows (x1e6 from the price alone needs `_MIN_MILLIONS_ROWS` and a sub-dollar median at
     x1000), then the stated unit (caption or schema, and a stated-unit cover), then the
     unlabelled cover ratio, then a price fit over fewer rows, else x1 with a WARNING. Disagreeing evidence is
-    logged and the price wins; the filing date never decides."""
+    logged and the price wins; the filing date never decides. This price-ratio heuristic cannot independently validate both numeric legs.
+    """
     statements: dict[str, float] = {}
     conflicting = declared.stated_factor is not None and math.isnan(declared.stated_factor)
     if declared.stated_factor is not None and not conflicting:

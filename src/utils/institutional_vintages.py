@@ -38,7 +38,9 @@ def full_13f_report(value: Any) -> bool:
 def reconcile_13f_source(
     source_rows: int, declared_rows: int | None, source_value: float, declared_value: float | None, *, source_accounted: bool = False
 ) -> float | None:
-    """Validate source totals after any finite power-of-ten cover-to-row alignment. The row count and the
+    """Check raw entries against the declared count (85-110%), before CUSIP grouping; cover alignment does not decide row USD units.
+
+    The row count and the
     empty-book rules raise; a non-empty book whose cover VALUE total does not align returns None, because
     that total is a reference only and the caller warns."""
     lower, upper = SEC_13F_SOURCE_RATIO_BOUNDS
@@ -65,7 +67,7 @@ def reconcile_13f_source(
     if declared_value is None:
         return 1.0
     if source_rows == 0:
-        # A cover declaring 0 entries with a positive total is an all-exits book; the total stays as filed.
+        # Numeric admission of a source-empty packet does not establish an economic exit; reporting scope is resolved separately.
         if source_value != 0 or (declared_value != 0 and (declared_rows != 0 or source_accounted)):
             raise ValueError("13F empty source has a positive declared VALUE total")
         return 1.0

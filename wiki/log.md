@@ -1387,6 +1387,17 @@ The user explicitly retains governance fills from later filings and the existing
 - Pages: [Data sources](./reference/data-sources.md), [Testing](./guides/testing.md), [Run the pipeline](./guides/run-the-pipeline.md), [Overview](./OVERVIEW.md).
 - No historical production replay was performed by this refresh.
 
+## 2026-11-20: refresh — measured 13F quality and actual caller behavior
+
+- Profile: internal/standard. Base/source_commit: `c833ec90f3f6c2bc9a70139663fdadb0f97cc111` on `dev` (overview anchor was `ea60c7d9612832515767f9b71338717e887b24b7`). This is a targeted 13F documentation/comment refresh, not recertification of unrelated source changes.
+- Pages: [Live database](./reference/live-database.md#13f-quality-snapshot--20-november-2026), [Data sources](./reference/data-sources.md#13f-source-versions-and-confidentiality), [Table catalog](./reference/table-catalog.md), [Cube aggregation](./modules/data-aggregate.md#sec-13f-values-and-immutable-books), [TODO](./TODO.md#13f-cleaning-quality-follow-ups-2026-11-20), [Overview](./OVERVIEW.md).
+- Corrected stale severe 2025 source-hole/backlog instructions and the former cube-table observation. Recorded 425,326 complete markers, the 322,955-packet audit and the completed ten-quarter/41,534-book cleaning replay. Separated packet rejection, positive-VALUE book availability, diagnostic row loss and actual empty output.
+- Corrected 85–110% raw-entry admission, warning-only nonempty cover-VALUE mismatches, and the caller's unenforced 80% survival diagnostic. Distinguished roughly 7% declaration/extraction-unit conflicts from additional cube factors and from an unmeasured true-error rate. Recorded synchronized quarterly publication after the filing cutoff, not an SEC publication event or a job-execution limit.
+- Updated source comments/docstrings at unit selection, repair, source reconciliation, profile cleaning, quarterly clock and donor-union construction. Comments document missing cover/issuer constraints, possible copied columns, coupled-scale blind spots and final guard losses. Executable behavior, thresholds, configurations and database data are unchanged.
+- Evidence: local ignored `reports/validate/13-f-diagnosis/` final report, CSV registers, raw J. Stern/Frontline/Lanark cases and `final_report_checks.json`. Completed source tests and the bounded five-accession validator are separate from unfinished alternative repair, concentrated-book/voting validation and donor-pool experiments. No new data replay or cube rebuild was run for this refresh.
+
+- Documentation checks: all six changed Python files compile; executable ASTs match `HEAD` exactly after docstrings are removed. `git diff --check` is clean. Configured link audits on the six edited wiki pages returned zero findings; reserved historical-log link advisories remain suppressed by project policy. The optional local Graphify refresh did not complete promptly and was stopped; no new navigation-index validation is claimed. No application, source-data or model replay was run for this documentation-only change.
+
 ## 2026-11-20: refresh — macro lag in trading sessions
 
 - Profile: internal/standard.

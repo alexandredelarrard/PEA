@@ -6,10 +6,11 @@ tags:
   - wiki
   - todo
   - data-quality
-source_commit: 1c36d16f5e951e61999a0b11ac33c50cf6381198
+source_commit: c833ec90f3f6c2bc9a70139663fdadb0f97cc111
 integration_parents:
   - 2a3fd08aec2245ec688f671a9d2e1894e4dd1ad8
   - fe27d5cd3fadc3736144e7a0c0216edc63eb1b1f
+source_review_scope: Targeted 13F quality and documentation refresh; unrelated sections retain their dated evidence.
 ---
 # TODO
 
@@ -38,6 +39,8 @@ Accepted 2026-10-14 after the 1999-2025 yearly sample (660 filings; local ignore
 - **Not recommended:** zero-padding stripped CUSIPs (SEDOLs pass the check digit ~10% of the time), voting-only/shifted pages, and the 22 books that now stop on a second defect.
 
 ## 13F deferred issues from the October 2026 audit
+
+The daily broad/elite architecture and source-adoption observations below are historical. Current cluster features use synchronized quarterly snapshots; the [20 November cleaning-quality follow-ups](#13f-cleaning-quality-follow-ups-2026-11-20) and [current cube contract](./modules/data-aggregate.md#sec-13f-values-and-immutable-books) govern present timing, quality and adoption. Preserve older bounded evidence without treating it as current population counts.
 
 Superseded in part: the broad and elite 13F code named below was removed by the per-cluster change ([cluster features](./modules/data-aggregate.md#sec-13f-cluster-features)); the source-coverage and identity items stay open.
 
@@ -494,11 +497,22 @@ Deferred at the close of the EDGAR text-table split (local, gitignored run dir `
 - **P3 — APTV and CRH quote units are assumed ratio 1 (2026-11-19).** Sharadar categorises both as `ADR Common Stock` and `unsupported_units` in [adjustments.py](../src/utils/price/adjustments.py) flags them, but the price part now publishes `security_basis` 1.0 and one aggregated warning per run instead of NaN, so their short-flow, FTD, momentum and valuation legs are populated. Level ratios (turnover, `ic_ftd_to_adv20`, per-share) may be off by the ADR ratio until each has a verified `quote_units` entry (a `configs/` bugfix entry; user approval).
 
 
+## 13F cleaning quality follow-ups (2026-11-20)
+
+These are diagnosis-based follow-ups requiring planning/validation, not implemented repairs or authorization for a source/cube rebuild. The [dated quality snapshot](./reference/live-database.md#13f-quality-snapshot--20-november-2026) supersedes the severe stored-source 2025-hole warning: source count rejection is 0.68–0.88% of 2025 cached packets, not an additional 2–3% post-storage filter. Roughly 7% declaration/extraction-unit conflicts do not establish either an error rate or correct repaired units.
+
+- **Numeric-leg and thin-book validation.** Preserve the J. Stern copied-column case (original `0002011335-26-000001`, restatement `0002011335-26-000002`), the single Frontline position (`0001643792-26-000001`) and the Lanark coupled-scale discontinuity. Test independently supported USD/quantity choices, separate voting evidence and a tightly guarded concentrated-book rule. Do not blanket-drop VALUE=quantity, assume a price-consistent prior quarter is true, or claim the unfinished repair comparisons passed.
+- **Make final book acceptance explicit.** The cluster/profile caller ignores `book_ok`, omits cover/issuer constraints and can exclude lines after the register is computed. Decide and validate a final count/value-survival policy; retain estimated/unknown provenance and prevent uncertain missing positions or confidential public views from proving sales.
+- **Measure donor/availability stability.** Compare identical historical filings under full and short build scopes; the required union can include later-quarter labels and recipients can influence their own peer reference. The empirical test is unfinished. Separately assess timely coverage and any change to the current cutoff/publication buffer; synchronized quarterly timing does not certify fixed composition.
+- **Keep source recovery distinct from quality exceptions.** Small real samples support counter-grain recognition with tight VALUE/identity/duplicate guards and strict all-zero public-view classification. Neither exception is implemented. Establish why the 248 currently admissible cached packets are absent before treating them as an ingestion backlog.
+
+The completed read-only work covers the full cached source census and a 2024Q1–2026Q2 cleaning replay. Raw cases, completed sample tests and explicit unfinished-test limits are retained in local `reports/validate/13-f-diagnosis/`. No production correction or backfill was performed.
+
 ## Cluster 13F follow-ups (2026-11-18)
 
 Deferred at the close of the cluster-based 13F features change (local, gitignored run dir `reports/validate/2026-11-17-cluster-13f-features/`).
 
-- **P1 — The nightly `build_sec_thirteen` stops until the user runs `build-sec-thirteen -F`.** The refit of 2026-11-18 (ids -2 to 15, floor of 4 positions, optional `turnover`) changed every label, and the live `cube_part_sec_thirteen` still holds the former 36 feature columns, so the normal step stops before any read and names `-F`. Pause the DAG, run `data_aggregate build-sec-thirteen -F`, then `assemble-cube`, then resume ([run guide](./guides/run-the-pipeline.md#cluster-labels-and-the-13f-cube-part)). The model pools already name the 80 columns, so no model scores on them until the weekly retrain after that rebuild. Agents never run this build.
+- **P1 — Cluster-cube adoption requires the user's full rebuild.** The refit of 2026-11-18 (ids -2 to 15, floor of 4 positions, optional `turnover`) changed every label. The former 36-feature live table was an 18 November observation; the [20 November inspection](./reference/live-database.md#13f-quality-snapshot--20-november-2026) found `cube_part_sec_thirteen` absent. Recovered source coverage and the 80-column code contract do not prove a current cube exists. Pause the DAG, run `data_aggregate build-sec-thirteen -F`, then `assemble-cube`, then resume ([run guide](./guides/run-the-pipeline.md#cluster-labels-and-the-13f-cube-part)). The model pools already name the 80 columns, so no model scores on them until the weekly retrain after that rebuild. Agents never run this build.
 - **P2 — Dead config.** `configs/superinvestors/ranked_managers.json`, the `build_cube.institutionals.superinvestor` block and `decay_halflife` have no reader. Remove them in one config-only change, with a grep over `src configs tests scripts` as caller evidence.
 - **P2 — scikit-learn is undeclared.** [cluster.py](../src/modelling/transformers/cluster.py) imports it and it arrives transitively through shap. Declare it in `pyproject.toml` (open decision: the dependency edit is the user's).
 - **P2 — Era stability gate (F-001, open user decision).** The era check (fit before 2013 against 2013 on, compared on overlapping managers) read 0.547 on all ten raw labels and 0.718 on the kept view before the refit of 2026-11-18; on the saved fit (floor of 4, optional `turnover`) it reads 0.544 raw and 0.704 on the kept view, 0.004 above the 0.70 threshold (0.704 clears the 0.70 threshold only on the kept view and only by that margin). The independent recomputation reads 0.552 raw and 0.669 on the rows kept by both fits (the pre-2013 fit keeps 8 clusters, the 2013+ fit keeps 6), so the verdict flips with the definition of the kept view. Split-half ARI is 0.854 raw and 0.825 kept (passes). Decide: accept era stability as informational, change the threshold or definition, or fit on a window with ETF mass. `cluster.yml` `stability.min_ari` is read by no `src` code.

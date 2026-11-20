@@ -161,6 +161,8 @@ def clean_book(raw: pd.DataFrame, cfg: DictConfig, prefixes: pd.Series) -> pd.Da
     book-unit repair; lines it re-values above their whole filed book (a garbage `shares` column) are dropped. Share lines that are bond
     principal (`bond_line_mask`) take the debt path before the repair: the book unit factor only, never shares x consensus price.
     A fallback amendment with fewer than `cfg.amendment_only_min_lines` lines gives no book.
+    This path uses peer consensus without market quotes or cover/issuer limits and does not enforce the repair's `book_ok` diagnostic.
+    The final positive-value filter can still remove every line; price consistency alone does not certify absolute USD or quantity units.
     """
     # Original accession lines only.
     book = _original_book(raw, int(cfg.amendment_only_min_lines))
@@ -172,12 +174,13 @@ def clean_book(raw: pd.DataFrame, cfg: DictConfig, prefixes: pd.Series) -> pd.Da
     bond = book["position_type"].eq("common") & bond_line_mask(book.assign(ticker=ticker), cfg.bond_lines)
     book = book.assign(debt_value=book["debt_value"].mask(bond, book["value_usd"]), position_type=book["position_type"].mask(bond, "debt"))
 
-    # Book-unit repair of the equity lines: consensus, repair, consensus on the repaired lines, repair.
+    # Both passes use the supplied donor roster, so a different build scope can change a historical repair.
     equity = book[book["position_type"].eq("common")]
     min_filers = int(cfg.price_check_min_filers)
     once, _ = repair_value_basis(equity, None, consensus=consensus_prices(equity, min_filers))
     repaired, register = repair_value_basis(equity, None, consensus=consensus_prices(once, min_filers))
     scale = _book_scale(book, register)
+    # The register predates this guard; its retention diagnostic is not final output retention.
     oversized = _oversized_revaluations(book, repaired, _kind_values(book), scale)
     repaired.loc[oversized, "value_usd"] = np.nan
     nulled = int((equity["value_usd"].gt(0) & repaired["value_usd"].isna()).sum())

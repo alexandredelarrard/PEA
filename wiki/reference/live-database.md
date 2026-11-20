@@ -9,8 +9,10 @@ tags:
   - database
   - operations
 cube_snapshot: 2026-10-16
-source_commit: 96e77f81e5cf184b513b1e9bc4785aa68945654b
+source_commit: c833ec90f3f6c2bc9a70139663fdadb0f97cc111
 text_test_snapshot: 2026-10-22
+source_review_scope: Targeted 13F quality and documentation refresh; unrelated sections retain their dated evidence.
+thirteen_f_snapshot: 2026-11-20
 ---
 # Live database
 
@@ -70,7 +72,7 @@ A general post-assembly drift monitor remains proposed, not implemented. The cur
 
 | Table | Observed scale | Observed coverage | Operational implication |
 | --- | --- | --- | --- |
-| `sec13f_hr` | about 95.8M rows / 31 GB, 369,417 complete accessions (2026-11-11) | period rows from 1987, usable broad coverage much later; 2025-2026 hole (see below) | Stream and scope every read; evaluate coverage on manager counts. |
+| `sec13f_hr` | 425,326 complete accessions (2026-11-20); the older 95.8M-row / 31 GB measurement is from 2026-11-11 | The severe stored-source 2025 hole is no longer present; this does not certify unit accuracy or a populated cube | Stream and scope every read; distinguish packets, manager-quarter books, timely books and usable cleaned books. See the [13F quality snapshot](#13f-quality-snapshot--20-november-2026). |
 | `sec_13f_manager_details` | 408,731 rows (2026-11-16) | one row per 13F filer and report quarter, 1999-06-30 to 2026-09-30; extract columns 100% name fill, 0 periods that are not a quarter end, `source_period` 100% filled; profile columns populated (2026-11-18: `category` on 408,731 rows, `turnover` 355,993, `active_share` 377,473, `book_return` 346,000) and `cluster` on 403,371 rows (every row but the 5,360 of the latest quarter 2026-09-30) | See [13F manager details](#13f-manager-details-2026-11-15). |
 | `prices` | about 1.78M rows | 2011-08 to 2026-08, 500 tickers | Price-dependent integration tests can run only when this table is present and current. |
 | `earnings_call_sections` | 2,804,060 paragraph rows, 33,591 calls (2026-10-02 full load) | 2005-10 to the load date, 487 tickers | Text is the payload; project and scope by ticker. |
@@ -96,7 +98,7 @@ The earnings-call tables were cut over to the defeatbeta paragraph grain on 2026
 
 Snapping refill (2026-11-16): the 1,355 rows whose period was not a quarter end (marker typos) were deleted and `thirteen-f-managers -F` rebuilt the table with the typo filings placed in the latest quarter end on or before their first filing date and the extract column `source_period` added: 408,731 rows (408,842 - 111: collisions with a quarter-end filing of the same CIK, duplicates among the typo filings and filings the cleaning rules drop), 0 periods that are not a quarter end, `source_period` filled on every row and different from `period` on 1,244 (1,242 `edgar_index`, 2 ZIP), lag from the snapped quarter end to `first_filed_date` p5/p50/p95 13/43/47 days (other rows 12/41/48). A snapped row's evidence is the marker pair under `source_period`, so a (cik, period) comparison against the markers lists those 1,244 rows as rows without evidence. The refill changed all 408,731 rows once (the new column; about 29 min on a loaded machine) and the next normal run changed 0 of 15,527 candidates.
 
-The profile columns are populated in the dev database (measured read-only on 2026-11-18): the table has 42 columns and 408,731 rows, `category` is filled on all 408,731 rows (0 null), `turnover` on 355,993, `active_share` on 377,473 and `book_return` on 346,000. The full-history profile run and the `cluster` fill were both done; the validation of the profile ran earlier on a scratch copy of 28 quarters (results in `reports/validate/2026-11-15-sec-13f-manager-profile/`). The `cluster` column (added as SMALLINT by `ALTER TABLE sec_13f_manager_details ADD COLUMN IF NOT EXISTS "cluster" SMALLINT`, then `ALTER COLUMN "cluster" TYPE BIGINT` on 2026-11-18, labels preserved; it is BIGINT now) is filled on 403,371 rows from 1999-06-30 to 2026-06-30; the 5,360 rows of the latest quarter 2026-09-30 have a NULL label. The live labels are those of the refit of 2026-11-18 (version `e8902b2797034b31`, size floor 4 positions and 20,000,000, optional `turnover`; 327,648 floor-passing fund rows, 7 kept clusters and 3 dropped), ids -2 to 15 with no null on a due row: 322,884 floor-passing fund rows split into 0: 54,392, 1: 30,512, 2: 30,028, 3: 33,606, 4: 29,223, 5: 30,696, 6: 18,627 (the kept fund clusters), 11: 48,716, 12: 38,042, 13: 8,425 (the tracked dropped fund clusters) and -2: 617 (a required feature null); the other categories hold 7 bank 21,009, 8 insurance 5,464, 9 broker_dealer 6,100, 10 pension 4,118, 14 sovereign 339 and 15 other 2,593 due rows between their id and `-1`; `-1` is every row below the floor, whatever its category (40,864 of the funds). In 2026 `-1` is 7.4% of the due rows and the two ETF clusters 11 and 12 hold 41.5%. Recomputing every label from `cluster_centroids.json` and `cluster.yml` reproduces the table with 0 mismatches (read-only check of 2026-11-18). The names behind the ids are `cluster.labels` ([Table catalog](./table-catalog.md)). `cube_part_sec_thirteen` on the live database still holds the former 13F design: 38 columns (`date`, `ticker` and 36 `f_ic_inst_*`/`f_ic_super_*` features), 1,598,107 rows, until the user runs `build-sec-thirteen -F`, which replaces them with the 80 cluster columns.
+The profile columns are populated in the dev database (measured read-only on 2026-11-18): the table has 42 columns and 408,731 rows, `category` is filled on all 408,731 rows (0 null), `turnover` on 355,993, `active_share` on 377,473 and `book_return` on 346,000. The full-history profile run and the `cluster` fill were both done; the validation of the profile ran earlier on a scratch copy of 28 quarters (results in `reports/validate/2026-11-15-sec-13f-manager-profile/`). The `cluster` column (added as SMALLINT by `ALTER TABLE sec_13f_manager_details ADD COLUMN IF NOT EXISTS "cluster" SMALLINT`, then `ALTER COLUMN "cluster" TYPE BIGINT` on 2026-11-18, labels preserved; it is BIGINT now) is filled on 403,371 rows from 1999-06-30 to 2026-06-30; the 5,360 rows of the latest quarter 2026-09-30 have a NULL label. The live labels are those of the refit of 2026-11-18 (version `e8902b2797034b31`, size floor 4 positions and 20,000,000, optional `turnover`; 327,648 floor-passing fund rows, 7 kept clusters and 3 dropped), ids -2 to 15 with no null on a due row: 322,884 floor-passing fund rows split into 0: 54,392, 1: 30,512, 2: 30,028, 3: 33,606, 4: 29,223, 5: 30,696, 6: 18,627 (the kept fund clusters), 11: 48,716, 12: 38,042, 13: 8,425 (the tracked dropped fund clusters) and -2: 617 (a required feature null); the other categories hold 7 bank 21,009, 8 insurance 5,464, 9 broker_dealer 6,100, 10 pension 4,118, 14 sovereign 339 and 15 other 2,593 due rows between their id and `-1`; `-1` is every row below the floor, whatever its category (40,864 of the funds). In 2026 `-1` is 7.4% of the due rows and the two ETF clusters 11 and 12 hold 41.5%. Recomputing every label from `cluster_centroids.json` and `cluster.yml` reproduces the table with 0 mismatches (read-only check of 2026-11-18). The names behind the ids are `cluster.labels` ([Table catalog](./table-catalog.md)). The 18 November observation of `cube_part_sec_thirteen` was the former 38-column design (36 broad/elite features), 1,598,107 rows. This table-presence observation is superseded: the [20 November inspection](#13f-quality-snapshot--20-november-2026) found the part absent. The 80-column cluster schema is a code contract, not proof of a populated current cube.
 
 ## Fundamentals snapshot
 
@@ -183,14 +185,52 @@ Pre-mandate rows reliably preserve event identity and filing dates, but numeric 
 
 Early stored periods can contain valid-looking holdings from only a small subset of managers. Use measured manager breadth, known hole/break masks, per-ticker prior-holder thresholds, and publication-date availability. Never infer completeness from ticker count or `min(period)`.
 
+### 13F quality snapshot — 20 November 2026
+
+**The severe stored-source 2025 hole is no longer present; absolute USD accuracy is not certified.** The live census has 425,326 accession markers, all complete. Stored managers number 8,169 / 8,160 / 8,145 / 8,884 for 2025Q1–Q4. The current `cube_part_sec_thirteen` table was absent: source recovery does not prove a current feature cube exists. These are dated observations from the local diagnosis (`reports/validate/13-f-diagnosis/report.html`), not guarantees for later runs.
+
+The audit covers 322,955 unique accession packets in 54 cached SEC windows. Originals and amendments are separate packets. Current rules reject 6,090 packets (1.886% across cached history): 6,039 count failures, 50 missing amendment types and one missing declared VALUE total. Another 248 packets are accepted by the current decoder but absent from storage; the cause is not established. No literal blank-CUSIP or invalid-numeric packet was found in this modern archive population. Nonempty cover-VALUE mismatches warn rather than reject. See [source admission](./data-sources.md#13f-source-versions-and-confidentiality).
+
+| Report quarter | Count-rejected packets / cached packets | Missing positive-VALUE manager-quarter keys / expected positive-VALUE keys | Common books / positive-common books entering repair | Positive-source books below 80% final common rows | Positive-source books wholly emptied |
+| --- | --- | --- | --- | --- | --- |
+| 2025Q1 | 58 / 8,478 (0.68%) | 24 / 8,126 (0.30%) | 4,267 / 4,262 | 10 (0.23%) | 0 |
+| 2025Q2 | 75 / 8,478 (0.88%) | 36 / 8,124 (0.44%) | 4,250 / 4,245 | 7 (0.16%) | 0 |
+| 2025Q3 | 70 / 8,423 (0.83%) | 28 / 8,099 (0.35%) | 4,101 / 4,099 | 3 (0.07%) | 0 |
+| 2025Q4 | 61 / 9,146 (0.67%) | 28 / 8,819 (0.32%) | 4,076 / 4,066 | 8 (0.20%) | 2 (0.05%) |
+
+Missing keys are measured before filing cutoff, cleaning and strategy selection, and include causes other than rejection. Cleaning percentages use positive-common-source books in the cube-required cohort, not all extracted managers. The completed production-code replay covers 2024Q1–2026Q2, 41,534 common books, with frozen full-build donor membership. It is not a saved-feature measurement or a complete historical cleaning series. The 80% survival result is **diagnostic, not enforced by the current cube caller**; see [actual cleaning behavior](../modules/data-aggregate.md#sec-13f-values-and-immutable-books).
+
+Of 2,941 nonempty packets declared as zero, 2,425 have zero source and cover VALUE; 515 have positive source VALUE. Real 2025 all-zero `000000000` rows include explicitly confidential placeholders. Zero public VALUE does not establish an empty economic portfolio or an exit. Literal missing CUSIPs and missing ticker mappings are different cases. The completed small source tests in that local diagnosis support narrow counter-grain exceptions and strict empty-public-view classification; neither proposal was implemented.
+
+| Report quarter | Extraction multiplier differs from stated/expected unit | Additional cube book-factor changes |
+| --- | --- | --- |
+| 2025Q1 | 325 / 4,267 (7.62%) | 24 (0.56%) |
+| 2025Q2 | 291 / 4,250 (6.85%) | 12 (0.28%) |
+| 2025Q3 | 260 / 4,101 (6.34%) | 10 (0.24%) |
+| 2025Q4 | 254 / 4,076 (6.23%) | 8 (0.20%) |
+
+These are disagreements/adjustments, **not measured error rates**. Available 2025 independent-price checks found no supported global-factor disagreement, but dropped/unpriced lines and jointly mis-scaled VALUE/quantity remain blind spots. A normal price ratio cannot certify absolute units. The true-error rate among the roughly 7% extraction overrides was not established. [Extraction unit selection](../../src/data_extract/utils/institutionals/value_units.py) and [cube repair](../../src/data_aggregate/utils/sec_thirteen/value_basis.py) are separate stages.
+
+The two positive books wholly lost in 2025Q4 are distinct diagnosis cases:
+
+- J. Stern accession `0002011335-26-000001`: $1,173,366,950 of source VALUE; all 43 raw quantities copy VALUE. The restatement repeats this. Separate voting quantities differ, but their use as replacement holdings quantities was not validated.
+- Svenska Handelsbanken accession `0001643792-26-000001`: one Frontline line, VALUE 1,213, quantity 54,734 and stored factor x1. An x1,000 correction is plausible, not certified. A one-security book cannot meet the five-security global-factor threshold.
+- The three-quarter Lanark raw/loaded comparison additionally demonstrates that a price-consistent prior quarter can have both legs mis-scaled. Equality alone does not prove the wrong leg, and temporal continuity alone does not identify the correct absolute scale.
+
+Quarterly features share a cutoff and publication day, then expand to daily rows. In 2025, 4.80% / 4.88% / 4.90% / 6.35% of observed managers had no stored packet eligible at cutoff, a separate availability issue. [Timing and consistency](../modules/data-aggregate.md#sec-13f-values-and-immutable-books) records the dates and remaining scope risks.
+
+Evidence is under local ignored `reports/validate/13-f-diagnosis/`: `quarterly_source_final.csv`, `quarterly_positive_book_availability.csv`, `final_quarterly_cleaning.csv`, the `cube_replay/` per-book register, raw-loss cases and `final_report_checks.json`. The bounded source validator passed five accessions /129 holdings; that does not certify universal economic correctness. Alternative repairs and empirical donor-pool sensitivity remain [unvalidated follow-ups](../TODO.md#13f-cleaning-quality-follow-ups-2026-11-20).
+
 ### 13F accessions missing versus the SEC data sets — 12 November 2026
+
+**Historical observation, superseded by the 20 November snapshot above.** The counts and hole below describe the database on 12 November, not the current recovery status.
 
 Measured read-only against the 54 cached SEC 13F data-set ZIPs (2013q2 to 01jun2026-31aug2026): `sec13f_hr` held 369,417 complete accessions (about 95.8M rows / 31 GB). Of the 322,955 13F-HR(/A) accessions in the ZIPs, 62,052 were not stored:
 
 - 5,985 in the 47 windows up to `01sep2024-30nov2024`. Sampled ones are almost all packets that fail `reconcile_13f_source` (row count outside 85-110% of the declared count, often `TABLEENTRYTOTAL` = 0 as filed), not filings the walk missed; the ingest gives them `invalid` markers.
 - 56,067 in the 7 windows from `01dec2024-28feb2025` (8,151 of 8,811 in `01jun2025-31aug2025`, all 9,900 in `01jun2026-31aug2026`); about 0.7% of these fail validation. This is the walk's 2025-2026 hole.
 
-The bounded live test of `zips-ingest --only 13f` (2013q2 and `01jan2024-29feb2024`) stored 4 accessions and 66 `invalid` markers and changed no pre-existing row. The backlog run is not done yet: run `zips-ingest --only 13f` once (decode about 0.17 s per accession, about 3 h plus OpenFIGI mapping of new CUSIPs). September 2026 onward has no data set yet and needs `thirteen-f --filing-window`. Local evidence: `reports/validate/2026-11-11-13f-zip-ingest/` (03-implementation.md P5, 03-validation.md).
+The then-bounded live test of `zips-ingest --only 13f` (2013q2 and `01jan2024-29feb2024`) stored four accessions and 66 invalid markers without changing existing rows. Its backlog and runtime estimates are historical, not instructions to rerun recovery now. Re-measure missing accessions and the latest cached-window boundary before any recovery; see the [recovery guide](../guides/large-backfills-and-recovery.md#13f-holes-and-missing-accessions). Historical evidence remains in local `reports/validate/2026-11-11-13f-zip-ingest/`.
 
 ### Fundamentals fact grain
 

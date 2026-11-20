@@ -7,10 +7,11 @@ tags:
   - reference
   - database
   - schema
-source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
+source_commit: c833ec90f3f6c2bc9a70139663fdadb0f97cc111
 integration_parents:
   - f06e3781ccb5756a0a1406895182de37329e282b
   - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
+source_review_scope: Targeted 13F quality and documentation refresh; unrelated sections retain their dated evidence.
 ---
 # Table catalog
 
@@ -177,7 +178,7 @@ The latest user instruction supersedes the additive-ledger design described in t
 
 The DataStore migration retains existing rows as unverified `_legacy` accessions and changes only the existing primary keys. Equivalent ZIP/EDGAR content replay is idempotent; altered source content conflicts; positions and completion commit in one transaction. The former broad and elite consumers read their respective existing tables and required verified completion, with no legacy substitution; the cluster reader uses the stored original lines ([cluster features](../modules/data-aggregate.md#sec-13f-cluster-features)). Legacy history requires source-accession replay before a historical cube rebuild. Bounded PostgreSQL 16 migration/replay tests pass: 21 real cached ZIP/EDGAR accessions, 98,297 grouped positions per destination, both read-only source validators PASS and twelve actual broad/elite sample builder calls PASS. Sample guard/roster overrides prove mechanics, not marketwide coverage. No production migration or cube write has occurred in this extra step; earlier physical auxiliary tables were not deleted.
 
-The 11 October source-admission follow-up on `dev` accepts raw row-count/cover ratios of 85–110%, with warnings, and uses accepted books normally for exits. Declared monetary totals are checked independently after cover-to-row alignment by any finite power of ten; this does not multiply row USD values a second time. The writer still verifies actual parsed rows and raw typed totals against the manifest. Replay additionally checks unchanged declared count/value metadata while preserving compatibility with existing content checksums. Both destination tables use the same [source reconciliation helper](../../src/utils/institutional_vintages.py).
+Source admission on `dev` accepts raw entry-count/cover ratios of 85–110%, before CUSIP grouping; a nonempty table declared as zero fails. This is the source count-rejection gate, rather than an additional post-storage book filter. For nonempty packets, a cover-VALUE mismatch warns after attempted power-of-ten alignment instead of rejecting; missing/invalid required metadata and empty-source contradictions still fail. Alignment does not choose or multiply row USD units. The writer separately verifies actual parsed rows and raw typed totals against the manifest, and replay checks unchanged declarations/content. The [shared reconciliation helper](../../src/utils/institutional_vintages.py) and [dated quality snapshot](./live-database.md#13f-quality-snapshot--20-november-2026) distinguish source certification from economic correctness and the cube caller's unenforced 80% survival diagnostic. Reporting scope and restrictions remain separate from numeric admission when inferring exits.
 
 The legacy parser follow-up permits genuinely absent cover declarations in the existing completion metadata, with nullable numeric types. This requires the reader's positive source-accounting evidence in the existing value_unit_evidence field, including a check of economic content outside parsed table spans and before their headers/column markers; null fields alone cannot waive reconciliation. The writer still verifies actual source rows/typed values and atomic completion. None, NaN and pandas.NA replay consistently; a changed real declaration or content checksum remains an immutable conflict; a different `source_checksum` alone replays as the same content. Literal 13F identifiers and original filing/acceptance clocks survive in `sec13f_hr`. The explicitly inferred holdings-report scope is distinct from a checked source checkbox and supports ordinary exits unless affirmative restrictions or amendment safeguards apply. No table, column, key or DDL change is required for this parser fix.
 

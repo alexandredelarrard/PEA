@@ -144,7 +144,7 @@ class StepCubeSecThirteen(Step):
 
     def _plan(self) -> Plan | None:
         """The window, the quarters to compute and the saved rows to carry; raises before any quarter is read when the part cannot be extended."""
-        
+
         # config: the validated clusters and their cube columns; the column budget warns above its limits
         cfg = self._config.cluster
         validate_cluster_config(cfg)
@@ -239,7 +239,7 @@ class StepCubeSecThirteen(Step):
 
     def _compute_quarters(self, plan: Plan, res: Resources) -> dict[pd.Timestamp, pd.DataFrame]:
         """The feature frame (index ticker, the configured float32 columns) of each quarter to compute, oldest first; each book is built once."""
-        # clean: the managers each report period must provide, over every quarter that reads it (itself, the next one and four ahead)
+        # clean: the required union includes later-quarter labels; build scope can therefore change an earlier book's consensus donors
         one, four = pd.offsets.QuarterEnd(1), pd.offsets.QuarterEnd(4)
         needs: dict[pd.Timestamp, frozenset[str]] = {}
         for t in plan.quarters.compute:

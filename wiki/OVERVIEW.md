@@ -6,7 +6,7 @@ tags:
   - wiki
   - overview
   - stock-pick-strat
-source_commit: 67116e24333d5f1afc11ba837afbdeaf41753a7a
+source_commit: b067ddc9b9fbde4b3094bb14f687b7dbdd6b34cc
 integration_parents:
   - f06e3781ccb5756a0a1406895182de37329e282b
   - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1

@@ -1386,3 +1386,10 @@ The user explicitly retains governance fills from later filings and the existing
 - Coverage: registered-form normalization, unresolved-metadata pending behavior, bounded Item 5.07 and referenced EX-99 extraction, table/prose vote prompts, fractional-count grounding, serial ticker workers, focused tests and exact-accession recovery guidance.
 - Pages: [Data sources](./reference/data-sources.md), [Testing](./guides/testing.md), [Run the pipeline](./guides/run-the-pipeline.md), [Overview](./OVERVIEW.md).
 - No historical production replay was performed by this refresh.
+
+## 2026-11-20: refresh — macro lag in trading sessions
+
+- Profile: internal/standard.
+- source_commit: b067ddc9b9fbde4b3094bb14f687b7dbdd6b34cc; bounded macro timing follow-up.
+- Coverage: configured macro lag counts retained trading sessions; SPY/gold/oil stay at zero; extraction and fills unchanged. Real replay uses the canonical stock-price calendar; five macro factors survive final panel/beta filters. Independent correctness and simplicity review clear within the declared scope; full production rebuild remains pending.
+- Pages: [Overview](./OVERVIEW.md), [Configuration](./reference/configuration.md), [Modelling and portfolio](./reference/modelling-and-portfolio.md), [Data aggregate](./modules/data-aggregate.md).

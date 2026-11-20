@@ -43,6 +43,7 @@ from src.validate.checks.employees import check_employees
 from src.validate.checks.identity import check_identity
 from src.validate.checks.institutionals import check_institutionals
 from src.validate.checks.modelling import check_modelling
+from src.validate.checks.volume_ledger import check_volume_ledger
 from src.validate.checks.window_lineage import check_window_lineage
 from src.validate.checks.window_plan import check_window_plans
 from src.validate.checks.window_sample import SampleSelection, capture_window_selection, check_window_sample, timing_sample_tables
@@ -328,6 +329,20 @@ def employees(out: str, config_path: str, tickers: str | None) -> None:
 def institutionals(out: str, config_path: str, ciks: tuple[str, ...], period_start: str, period_end: str, filed_through: str) -> None:
     _, context = get_config_context(config_path, use_cache=False, save=False)
     result = check_institutionals(context, ciks=list(ciks), start_period=period_start, end_period=period_end, filed_through=filed_through)
+    path = write_result(out, result)
+    click.echo(result.summary())
+    click.echo(f"  -> {path}")
+    sys.exit(EXIT[result.status])
+
+
+@cli.command(name="volume-ledger", help="Saved prices volume against FINRA total volume across every Yahoo ledger event since 2018-08.")
+@click.option(*OUT_ARGS, **cast(dict[str, Any], OUT_KWARGS))
+@click.option(*CONFIG_ARGS, **cast(dict[str, Any], CONFIG_KWARGS))
+@click.option(*TICKERS_ARGS, **cast(dict[str, Any], TICKERS_KWARGS))
+def volume_ledger(out: str, config_path: str, tickers: str | None) -> None:
+    _, context = get_config_context(config_path, use_cache=False, save=False)
+    names = context.universe.subset(tickers.split(",")) if tickers else None
+    result = check_volume_ledger(context, tickers=names)
     path = write_result(out, result)
     click.echo(result.summary())
     click.echo(f"  -> {path}")

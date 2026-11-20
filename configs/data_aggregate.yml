@@ -59,7 +59,6 @@ data_aggregate:
     earnings_scale_quarters: 8 # supported 2..8 within the six-year source window
 
   sec_thirteen:            # informed-capital panels (13F, insider, 13D/G, short flow)
-    unknown_unit_factor: 1.0  # terminal-unit factor for a ticker whose price part has no basis at all (ADR/ADS without a verified quote-unit entry): a value that may be off by the ADR ratio beats NaN, since features are changes over time
     superinvestor:
       # One user-owned ordered raw-CIK list: superinvestors/ranked_managers.json.
       # The checked-in ascending default is provisional, with retrospective roster bias.

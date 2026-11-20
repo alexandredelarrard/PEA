@@ -160,7 +160,7 @@ Important blocks:
 | `features` | Cross-sectional transform policy. |
 | `intrinsic` | Two-stage DCF parameters; terminal growth must remain below discount rate. |
 | `hist` | Five-year-style self-history comparison window and minimum observations. |
-| `sec_thirteen` | The consumed unknown-unit factor of the institutional flows; the `superinvestor` block (top-K 20, 90-day book age) is dead config awaiting cleanup (the 13F cube part reads `cluster.yml`). Publication policy is in `data.yml`. |
+| `sec_thirteen` | Only the `superinvestor` block (top-K 20, 90-day book age) is dead config awaiting cleanup (the 13F cube part reads `cluster.yml`). Publication policy is in `data.yml`. |
 | `fundamentals_features` | `earnings_scale_quarters` controls prior SUE scale (2–8). Eight lag slots, eight-quarter persistence and three-session response are fixed with their mathematical owners; changing them requires a feature-contract migration. |
 | `workforce` | `part_time_weight`: α of the workforce headcount proxy FT + α·PT (0.65; must lie in [0.5, 1]). See [workforce features](./modelling-and-portfolio.md#workforce-features). |
 

@@ -15,7 +15,7 @@ from src.data_aggregate.utils.common.peers_io import load_peers
 from src.data_aggregate.utils.price.observations import fundamental_share_observations
 from src.data_store.schema import Tables
 from src.utils.cutover_continuity import PredecessorSeries, predecessor_actions
-from src.utils.price.adjustments import ShareBasis, unsupported_units
+from src.utils.price.adjustments import ShareBasis, warn_assumed_unit_ratio
 from src.utils.publication import point_in_time
 from src.utils.window import Window
 
@@ -58,7 +58,6 @@ class PriceInputs:
     actions: pd.DataFrame | None
     splits: pd.DataFrame | None
     predecessors: tuple[PredecessorSeries, ...]
-    unsupported_units: frozenset[str]
 
 
 def _owner_series(df_owners: pd.DataFrame | None) -> tuple[PredecessorSeries, ...]:
@@ -135,8 +134,8 @@ def load_price_inputs(context: Context, tickers: list[str], bugfix: dict) -> Pri
         df_actions = pd.DataFrame(columns=["ticker", "date", "action", "value"])
     if df_splits is None and splits_present:
         df_splits = pd.DataFrame(columns=["ticker", "date", "ratio"])
-    unknown = unsupported_units(df_actions, df_security, tickers, bugfix)
-    return PriceInputs(df_bars, market, peers, df_vendor, df_shares, df_actions, df_splits, predecessors, unknown)
+    warn_assumed_unit_ratio(df_actions, df_security, tickers, bugfix)
+    return PriceInputs(df_bars, market, peers, df_vendor, df_shares, df_actions, df_splits, predecessors)
 
 
 def merge_price_actions(inputs: PriceInputs, tickers: list[str]) -> pd.DataFrame | None:

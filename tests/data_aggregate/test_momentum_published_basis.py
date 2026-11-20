@@ -53,6 +53,26 @@ def test_dollar_volume_is_saved_as_traded_quote_times_as_traded_tape() -> None:
     )
 
 
+def test_volume_signals_are_on_dollars_so_a_share_unit_step_is_no_jump() -> None:
+    """A CTVA-shaped tape: share volume x6.665 before the event and the quote 1/6.665 as large, dollars flat."""
+    index = pd.bdate_range("2026-05-01", periods=160)
+    event = 100
+    df_close = pd.DataFrame({"AAA": 50.0}, index=index)
+    df_volume = pd.DataFrame({"AAA": [6.665 * 1_000_000.0] * event + [1_000_000.0] * (len(index) - event)}, index=index)
+    df_quote = pd.DataFrame({"AAA": [50.0 / 6.665] * event + [50.0] * (len(index) - event)}, index=index)
+    df_tape = pd.DataFrame({"AAA": [6.665 * 1_000_000.0] * event + [1_000_000.0] * (len(index) - event)}, index=index)
+
+    fields = compute_raw_features(_frames(df_close, df_volume, df_quote, df_tape))
+
+    after = fields["rel_volume_5_63"].iloc[event : event + 30, 0]
+    assert after.eq(1.0).all(), after.describe()
+    assert fields["volume_trend_63"].iloc[-1, 0] == pytest.approx(0.0, abs=1e-12)
+    assert fields["volume_cv_63"].iloc[-1, 0] == pytest.approx(0.0, abs=1e-12)
+    print(
+        f"SANITY: share volume steps x6.665 at the event while traded dollars stay flat; rel_volume_5_63 stays exactly 1.0 over the {len(after)} sessions after it, volume_trend_63 and volume_cv_63 are 0."
+    )
+
+
 @pytest.mark.parametrize("missing", ["no_tape_column", "null_tape", "null_quote", "nonpositive_quote"])
 def test_missing_as_traded_quote_or_tape_never_becomes_dollar_liquidity(missing: str) -> None:
     index = pd.bdate_range("2020-01-02", periods=100)
@@ -65,9 +85,10 @@ def test_missing_as_traded_quote_or_tape_never_becomes_dollar_liquidity(missing:
 
     assert fields["dollar_volume_63"].isna().all().all()
     assert fields["amihud_63"].isna().all().all()
-    assert fields["rel_volume_5_63"].iloc[-1, 0] > 0
+    for name in ("rel_volume_5_63", "signed_vol_63", "volume_trend_63", "volume_cv_63"):
+        assert fields[name].isna().all().all(), name
     assert fields["rev_5"].iloc[-1, 0] < 0
-    print(f"SANITY: {missing} keeps dollar volume and Amihud unknown; return and relative-volume features stay supported.")
+    print(f"SANITY: {missing} keeps dollar volume, Amihud and the four dollar-volume signals unknown; return features stay supported.")
 
 
 def test_momentum_builder_reads_only_saved_pit_fields() -> None:

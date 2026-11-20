@@ -9,7 +9,9 @@ introduced while fixing market cap. Which block uses which:
   close_split  -- `atr_14`     : (high - prev_close), (low - prev_close)
                   `gap_21`     : open / prev_close - 1
                   `range_21`   : |close - open| / open
-  close_pit    -- `dollar_volume_63` / `amihud_63` : as-traded `close_pit x volume_pit`
+  close_pit    -- `dollar_volume_63` / `amihud_63` and the four volume signals `rel_volume_5_63`,
+                  `signed_vol_63`, `volume_trend_63`, `volume_cv_63`: as-traded `close_pit x volume_pit`,
+                  so a split or spin-off unit step in shares creates no step in them
   close_total  -- every RETURN: mom_12_1, rev_5/21, ma_ratio_50/200, high_prox_252,
                   peer_mom_63, the seasonal block, macd, rsi_14, and the `ret` the
                   vol / skew / idio family is built from
@@ -237,22 +239,21 @@ def dollar_volume(df_quote: pd.DataFrame | None, df_tape: pd.DataFrame | None, l
 
 
 def _liquidity_features(prices: PriceFrames, df_ret: pd.DataFrame) -> dict[str, pd.DataFrame]:
-    """Value the as-traded tape in dollars and compute trailing volume signals."""
+    """Value the as-traded tape in dollars and compute trailing volume signals on those dollars."""
     if prices.volume is None:
         return {}
     assert prices.close_total is not None
-    df_volume = prices.volume.reindex_like(prices.close_total)
     df_dollars = dollar_volume(prices.close_pit, prices.volume_pit, prices.close_total)
     df_dollar_log = cast(pd.DataFrame, np.log1p(df_dollars.rolling(63, min_periods=20).mean()))
     df_amihud = sanitize(df_ret.abs() / df_dollars.where(df_dollars > 0))
     df_amihud_mean = df_amihud.rolling(63, min_periods=20).mean()
     df_amihud_log = cast(pd.DataFrame, np.log(df_amihud_mean.where(df_amihud_mean > 0)))
-    df_short = df_volume.rolling(5, min_periods=3).mean()
-    df_medium = df_volume.rolling(63, min_periods=20).mean()
-    df_signed = cast(pd.DataFrame, np.sign(df_ret) * df_volume)
+    df_short = df_dollars.rolling(5, min_periods=3).mean()
+    df_medium = df_dollars.rolling(63, min_periods=20).mean()
+    df_signed = cast(pd.DataFrame, np.sign(df_ret) * df_dollars)
     df_numerator = df_signed.rolling(63, min_periods=20).sum()
-    df_denominator = df_volume.rolling(63, min_periods=20).sum()
-    df_long = df_volume.rolling(252, min_periods=60).mean()
+    df_denominator = df_dollars.rolling(63, min_periods=20).sum()
+    df_long = df_dollars.rolling(252, min_periods=60).mean()
     df_trend = cast(pd.DataFrame, np.log(df_medium / df_long.where(df_long > 0)))
     return {
         "dollar_volume_63": sanitize(df_dollar_log),
@@ -260,7 +261,7 @@ def _liquidity_features(prices: PriceFrames, df_ret: pd.DataFrame) -> dict[str, 
         "rel_volume_5_63": sanitize(df_short / df_medium.where(df_medium > 0)),
         "signed_vol_63": sanitize(df_numerator / df_denominator.where(df_denominator > 0)),
         "volume_trend_63": sanitize(df_trend),
-        "volume_cv_63": sanitize(df_volume.rolling(63, min_periods=20).std() / df_medium.where(df_medium > 0)),
+        "volume_cv_63": sanitize(df_dollars.rolling(63, min_periods=20).std() / df_medium.where(df_medium > 0)),
     }
 
 

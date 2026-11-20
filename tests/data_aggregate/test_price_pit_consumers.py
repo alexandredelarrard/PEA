@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -72,17 +74,19 @@ def test_tape_support_rejects_malformed_genuine_or_vendor_evidence(invalid_facto
     print("SANITY: identical invalid G/F factors cannot establish tape compatibility by being silently discarded.")
 
 
-def test_unestablished_adr_units_never_become_a_trusted_identity() -> None:
+def test_unestablished_adr_units_default_to_identity_with_one_warning(caplog: pytest.LogCaptureFixture) -> None:
     df_actions = pd.DataFrame({"ticker": ["TEST"], "date": pd.to_datetime(["2020-01-03"]), "action": ["adrratiosplit"], "value": [2.0]})
-    basis = quantity_basis(df_actions, pd.DataFrame(columns=["ticker", "date", "ratio"]), {}, ["TEST"])
-    assert basis.unknown_units == frozenset({"TEST"})
+    with caplog.at_level(logging.WARNING):
+        basis = quantity_basis(df_actions, pd.DataFrame(columns=["ticker", "date", "ratio"]), {}, ["TEST"])
     names = pd.Series(["TEST"])
     source = pd.Series(pd.to_datetime(["2020-01-02"]))
     target = pd.Series(pd.to_datetime(["2020-01-06"]))
     result = rebase_security_quantities(basis, pd.Series([100.0]), names, source, target, pd.Series([1.0]))
-    assert result.isna().all()
-    assert basis.factor(names, target, "units").isna().all()
-    print("SANITY: an observed ADR-ratio change without an initial unit convention stays unsupported across all quantity adapters.")
+    assert result.tolist() == [100.0]
+    assert basis.factor(names, target, "units").eq(1.0).all()
+    warned = [record.getMessage() for record in caplog.records if "unit ratio 1 assumed" in record.getMessage()]
+    assert len(warned) == 1 and "TEST" in warned[0]
+    print("SANITY: an observed ADR-ratio change without a verified unit convention converts at the identity ratio 1 and warns once, never NaN.")
 
 
 def test_proxy_count_is_the_saved_count_as_of_the_proxy_date() -> None:

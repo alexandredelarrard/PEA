@@ -37,6 +37,7 @@ def run_per_ticker[R](
     Returns results in `df_scope` row order. `PROGRAMMING_ERRORS` escape; any other
     exception is logged as a warning keyed on the row's first key column and yields None."""
 
+    # Guard source failures while letting programming errors fail the run.
     def _guarded(key: Any, *args: Any) -> R | None:
         try:
             return worker(key, *args)
@@ -46,6 +47,7 @@ def run_per_ticker[R](
             logger.warning("%s: %s failed (%s)", desc, key, exc)
             return None
 
+    # Preserve scope order, using synchronous work when only one worker is requested.
     rows = list(df_scope[list(key_cols)].itertuples(index=False, name=None))
     if max_workers == 1:
         return [_guarded(*row) for row in tqdm(rows, desc=desc)]

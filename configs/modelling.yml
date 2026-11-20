@@ -8,7 +8,7 @@
 model:
   label_column: y
   target_type: zscore          # preserve target magnitude in fitting.
-  horizons: [30, 60, 90]
+  horizons: [30, 60]
   ensemble: [elasticnet, lgbm, random_forest]   # families to train; per-day-standardized preds are averaged.
 
   models_dir: output/models    # fitted members (model_h<h>_<family>.pkl) + metadata.json, under the
@@ -29,8 +29,8 @@ model:
   diagnostics:                # Required assessment artifacts under the named dated run.
     dependence_sample: 2000   # Display rows; retain the full sampled contributions separately.
     shap_sample: 20000        # Development budget across five folds, plus this many cutoff rows.
-    shap_top_features: 50     # Positive report feature cap per model/horizon, ranked by cutoff importance.
-    pdp_grid: 30               # partial-dependence grid resolution
+    shap_top_features: 70     # Positive report feature cap per model/horizon, ranked by cutoff importance.
+    pdp_grid: 20              # partial-dependence grid resolution
     pdp_background: 2000
     rolling_window: 252
 

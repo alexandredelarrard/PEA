@@ -553,7 +553,7 @@ linear:
     # - f_ic_cluster_1_rank_gap
     - f_ic_cluster_1_rank_gap_chg
     # - f_ic_cluster_1_stickiness
-    # - f_ic_cluster_1_cap_proximity
+    - f_ic_cluster_1_cap_proximity
     # - f_ic_cluster_2_net_breadth
     - f_ic_cluster_2_new_position_rate
     - f_ic_cluster_2_net_share_flow

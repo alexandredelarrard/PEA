@@ -97,6 +97,7 @@ def _read_index_markers(context: Context, df_zip: pd.DataFrame, window: Window) 
 def fetch_manager_details(context: Context) -> int:
     """Refresh manager metadata inside its shared configured Window, preserving profile columns."""
     # load: the window, then its evidence (cover pages, marker rows and index names)
+
     cache = thirteen_f_cache(context)
     data_sets = cached_data_sets(cache)
     plan = _manager_window(context, data_sets)
@@ -109,7 +110,10 @@ def fetch_manager_details(context: Context) -> int:
     df_markers, df_names = _read_index_markers(context, df_zip, window)
 
     # clean: the cover filings and the marker filings named by the index
-    df_index = marker_manager_filings(df_markers, df_names) if not df_markers.empty else pd.DataFrame()
+    df_index = pd.DataFrame()
+    if not df_markers.empty:
+        df_index = marker_manager_filings(df_markers, df_names)
+
     logger.info(
         "13F managers: filings from %s; %d data set(s) read: %s; %d cover filing(s), %d index filing(s)",
         window.start.date(),
@@ -132,9 +136,11 @@ def fetch_manager_details(context: Context) -> int:
     df_stored = context.store.load(
         Tables.sec_13f_manager_details,
         columns=list(EXTRACT_COLUMNS),
-        where=df_rows[["cik", "period"]],
         optional=True,
     )
+    keys = pd.MultiIndex.from_frame(df_rows[["cik", "period"]].drop_duplicates())
+    df_stored = df_stored.loc[pd.MultiIndex.from_frame(df_stored[["cik", "period"]]).isin(keys)]
+
     df_changed = rows_to_save(df_rows, df_stored)
     if not df_changed["first_filed_date"].between(window.start, window.end).all():
         raise ValueError("Manager metadata correction crosses its Window; use explicit bounded historical recovery")

@@ -455,13 +455,3 @@ EARNINGS_CALL_FEATURES = (
 PREDICTION_MODEL_ENSEMBLE = "ensemble"  # the per-horizon average of that horizon's members
 PREDICTION_MODEL_BLENDED = "blended"  # the IR-weighted blend ACROSS horizons
 MODEL_GENERATION_ARTIFACT_FORMAT = "transformer-pickle-generation-v2"
-
-# --------------------------------------------------------------------------- #
-# Incremental cube-part builds (Airflow data_aggregation DAG)                  #
-# --------------------------------------------------------------------------- #
-
-# The cube + the ad-hoc intermediate `cube_part_*` tables the sub-steps hand to each other are
-# declared in src/data_store/schema.py (`Tables.cube`, `Tables.cube_part_*`), the parts with
-# `managed=False`: they carry a declared PK and date column but own their own DDL (inferred from
-# the frame each owning step writes) and stay out of sql/schema.sql. `parts.py` adds only the
-# build ORCHESTRATION on top (CLI command, warm-up window, binding look-backs).

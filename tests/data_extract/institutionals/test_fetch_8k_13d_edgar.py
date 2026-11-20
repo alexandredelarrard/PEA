@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import json
+import re
 import warnings
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
@@ -18,6 +21,7 @@ import edgar
 import pandas as pd
 import pytest
 
+from scripts import recover_8k_item_507
 from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.edgar_extract import fetch_8k_edgar
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, FilingStamp, _read_key, parse_filing_rows
@@ -113,7 +117,7 @@ def _fake_8k_filing(
 @pytest.mark.parametrize("resolved", [False, True])
 def test_8k_unresolved_item_metadata_remains_pending(resolved: bool, monkeypatch: pytest.MonkeyPatch) -> None:
     """Missing metadata fails the read; a resolved, genuinely empty item list can complete."""
-    filing = _fake_8k_filing(items="")
+    filing = _fake_8k_filing(items="", text="")
     if not resolved:
         filing = edgar.Filing(cik=1, company="AAA", form="8-K", filing_date="2024-05-01", accession_no=filing.accession_number)
     units = pd.DataFrame([{"cik": "0000000001", "company": "AAA", "form": "8-K", "filed": "2024-05-01", "accession": filing.accession_number}])
@@ -128,13 +132,10 @@ def test_8k_unresolved_item_metadata_remains_pending(resolved: bool, monkeypatch
     print(f"\nSANITY: resolved={resolved}: failed={len(failed)}, markers={markers}; unresolved metadata cannot generate a completion row.")
 
 
-def test_8k_filing_row_reads_current_report_flags():
-    """has_earnings/has_press_release come from the typed CurrentReport object,
-    stored as 1.0/0.0 flags (repo convention) on EVERY row -- the grain is one
-    row per (filing, item code), so a 2-item filing yields 2 rows sharing the
-    same flags/n_items, each carrying its own item code."""
+def test_8k_filing_row_reads_current_report_flags() -> None:
+    """Typed report flags are shared by every item row, encoded as 1.0/0.0."""
     obj = SimpleNamespace(has_earnings=True, has_press_release=False)
-    filing = _fake_8k_filing(obj=obj)
+    filing = _fake_8k_filing(obj=obj, text="")
     rows = _filing_row("MAA", FilingStamp.of(filing, "0000320193"))
     assert [r["item"] for r in rows] == ["2.02", "9.01"]
     assert all(r["has_earnings"] == 1.0 for r in rows)
@@ -142,9 +143,10 @@ def test_8k_filing_row_reads_current_report_flags():
     assert all(r["n_items"] == 2 for r in rows)
     assert all(r["is_amendment"] == 0.0 for r in rows)
     assert all(r["cik"] == "0000320193" for r in rows)
+    print("SANITY: both item rows retain the filing flags, registrant and source item count.")
 
 
-def test_8k_item_absent_from_parsed_body_is_silent_and_empty():
+def test_8k_item_absent_from_parsed_body_is_silent_and_empty() -> None:
     """An item code in the index but missing from the parsed report (edgartools 5.5x warns
     `CurrentReport['Item 7.01'] found no such item`) yields empty text with no FutureWarning."""
 
@@ -152,7 +154,7 @@ def test_8k_item_absent_from_parsed_body_is_silent_and_empty():
         def __getitem__(self, key: str):
             warnings.warn(f"CurrentReport['{key}'] found no such item in this filing. Items are optional.", FutureWarning, stacklevel=2)
 
-    filing = _fake_8k_filing(obj=_Report(has_earnings=True, has_press_release=False))
+    filing = _fake_8k_filing(obj=_Report(has_earnings=True, has_press_release=False), text="")
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
         importlib.reload(fetch_8k_edgar)  # re-installs the module filter on top of "always"
@@ -163,26 +165,23 @@ def test_8k_item_absent_from_parsed_body_is_silent_and_empty():
     print(f"\n=== SANITY CHECK: {len(rows)} rows, empty text, {len(leaked)} leaked FutureWarnings. Validated. ===")
 
 
-def test_8k_filing_row_survives_failed_obj_parse():
-    """A filing whose .obj() call raises must still yield rows (item codes are
-    always reliable, straight from the filing index) with both CurrentReport
-    flags NaN rather than losing the rows entirely.
-
-    NaN, not None: `store.ensure_table` types a cold table's columns from the first
-    frame written to it, so an all-None flag column would be created TEXT."""
-    filing = _fake_8k_filing()  # obj=None -> .obj() raises
+def test_8k_filing_row_survives_failed_obj_parse() -> None:
+    """Failed typed parsing keeps metadata item rows and numeric NaN flags."""
+    filing = _fake_8k_filing(text="")  # obj=None -> .obj() raises
     rows = _filing_row("MAA", FilingStamp.of(filing, "0000320193"))
     assert [r["item"] for r in rows] == ["2.02", "9.01"]
     assert all(pd.isna(r["has_earnings"]) for r in rows)
     assert all(pd.isna(r["has_press_release"]) for r in rows)
     assert all(isinstance(r["has_earnings"], float) for r in rows)
     assert all(r["item_text"] == "" for r in rows)
+    print("SANITY: failed CurrentReport parsing retains source items with numeric NULL flags.")
 
 
-def test_8k_amendment_flag_from_form_suffix():
-    filing = _fake_8k_filing(form="8-K/A", obj=SimpleNamespace(has_earnings=False, has_press_release=False))
+def test_8k_amendment_flag_from_form_suffix() -> None:
+    filing = _fake_8k_filing(form="8-K/A", obj=SimpleNamespace(has_earnings=False, has_press_release=False), text="")
     rows = _filing_row("MAA", FilingStamp.of(filing, "0000320193"))
     assert all(r["is_amendment"] == 1.0 for r in rows)
+    print("SANITY: 8-K/A rows retain their separate amendment identity.")
 
 
 class _CurrentReport(SimpleNamespace):
@@ -195,7 +194,7 @@ class _CurrentReport(SimpleNamespace):
         return self.item_text
 
 
-def test_8k_item_507_recovers_table_from_primary_document_when_structured_slice_is_stub():
+def test_8k_item_507_recovers_table_from_primary_document_when_structured_slice_is_stub() -> None:
     stub = "The final voting results for each matter are set forth below."
     primary = """Item 5.07.      Submission
 of Matters to a Vote of Security Holders.
@@ -215,18 +214,24 @@ This text must not leak into Item 5.07.
 
     assert "1,234,567" in item["item_text"]
     assert "This text must not leak" not in item["item_text"]
+    print("SANITY: the primary vote table replaces the stub and stops before Item9.01.")
 
 
-def test_8k_item_507_preserves_complete_structured_text_without_reading_primary_document():
+def test_8k_item_507_preserves_complete_source_values_after_primary_check() -> None:
     complete = "Final voting results below. Votes For 1,234,567; Votes Against 23,456; Votes Abstained 1,234."
-    filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(complete))
+    primary = f"Item 5.07.\n{complete}\nSIGNATURES"
+    filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(complete), text=primary)
+    reads = []
+    filing.text = lambda: reads.append(1) or primary
 
     rows = _filing_row("AAPL", FilingStamp.of(filing, "0000320193"))
 
     assert rows[0]["item_text"] == complete
+    assert reads == [1]
+    print("SANITY: a complete source retains every value and needs only one primary-text read.")
 
 
-def test_8k_item_507_does_not_replace_stub_when_primary_document_has_no_tally():
+def test_8k_item_507_does_not_replace_stub_when_primary_document_has_no_tally() -> None:
     stub = "The final voting results are set forth below."
     primary = "Item 5.07. Submission of Matters to a Vote of Security Holders.\nNo results were included.\nSIGNATURES"
     filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(stub), text=primary)
@@ -234,15 +239,127 @@ def test_8k_item_507_does_not_replace_stub_when_primary_document_has_no_tally():
     rows = _filing_row("AAPL", FilingStamp.of(filing, "0000320193"))
 
     assert rows[0]["item_text"] == stub
+    print("SANITY: a primary without numeric tallies does not invent a vote table or discard the existing source slice.")
 
 
-def test_8k_item_507_does_not_read_primary_document_without_results_follow_signal():
+def test_8k_item_507_reads_primary_without_results_follow_signal() -> None:
     stub = "The annual meeting occurred on May 1, 2026."
-    filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(stub))
+    primary = "Item 5.07. Submission of Matters to a Vote of Security Holders.\nVotes For 1,234,567; Votes Against 23,456; Abstain 1,234.\nSIGNATURES"
+    filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(stub), text=primary)
 
     rows = _filing_row("AAPL", FilingStamp.of(filing, "0000320193"))
 
-    assert rows[0]["item_text"] == stub
+    assert "1,234,567" in rows[0]["item_text"]
+    print("SANITY: missing results-follow wording no longer prevents recovery of the actual primary voting table.")
+
+
+@pytest.mark.parametrize(
+    ("heading", "structured", "items"),
+    [
+        ("Item 5.07.", "", "5.07,9.01"),
+        ("Item.5.07", "The final voting results are set forth below.", "5.07"),
+        ("I tem 5.07", "Votes For 1,234,567; Against 23,456; Abstain 1,234.", "5.07"),
+        ("5.07 -", "", "5.07"),
+        ("Item 5.07", "", "5.02,9.01"),
+        ("Item 5.07", "", ""),
+    ],
+)
+def test_8k_item_507_recovers_all_proposals_from_primary(heading: str, structured: str, items: str) -> None:
+    """Blank, partial and metadata-omitted slices keep both internal proposal tables."""
+    primary = f"""{heading} Submission of Matters to a Vote of Security Holders.
+Item 1. Election of Directors
+Name              Votes For      Votes Against      Abstain
+Ann Example       1,234,567      23,456             1,234
+Item 2. Auditor Ratification
+Votes For      Votes Against      Abstain
+2,345,678      34,567             2,345
+Item 9.01. Financial Statements and Exhibits.
+UNRELATED SECTION 9,999,999
+SIGNATURES
+"""
+    filing = _fake_8k_filing(items=items, obj=_CurrentReport(structured), text=primary)
+
+    rows = _filing_row("AAA", FilingStamp.of(filing, "0000000001"))
+    vote = next(row for row in rows if row["item"] == "5.07")
+
+    assert all(value in vote["item_text"] for value in ("Ann Example", "1,234,567", "23,456", "1,234", "2,345,678", "34,567", "2,345"))
+    assert "Item 2." in vote["item_text"]
+    assert "UNRELATED SECTION" not in vote["item_text"]
+    assert vote["n_items"] == len([item for item in items.split(",") if item]) + int("5.07" not in items)
+    print(f"SANITY: {heading!r}, metadata={items!r}: both proposal tables recovered; the following8-K section is excluded.")
+
+
+def test_8k_item_507_prefers_bounded_primary_over_longer_contaminated_slice() -> None:
+    complete = "Votes For 1,234,567; Votes Against 23,456; Abstain 1,234."
+    contaminated = complete + "\nItem 9.01. UNRELATED SECTION\n" + "9,999,999 " * 50
+    primary = f"Item 5.07. Submission of Matters to a Vote of Security Holders.\n{complete}\nItem 9.01. UNRELATED SECTION"
+    filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(contaminated), text=primary)
+
+    rows = _filing_row("AAA", FilingStamp.of(filing, "0000000001"))
+
+    assert complete in rows[0]["item_text"]
+    assert "UNRELATED SECTION" not in rows[0]["item_text"]
+    print("SANITY: a shorter complete voting section replaces the longer contaminated slice without losing votes.")
+
+
+def test_8k_item_507_does_not_append_a_referenced_charter() -> None:
+    """A charter reference does not turn its share capital and legal language into voting results."""
+    complete = "Votes For 1,234,567; Votes Against 23,456; Abstain 1,234."
+    primary = f"Item 5.07.\n{complete}\nThe restated articles are filed as Exhibit 3.2 and incorporated herein.\nSIGNATURES"
+    charter = "The authorized shares are 30,000,000 and 10,000,000; votes against are subject to the following restrictions."
+    filing = _fake_8k_filing(items="5.07", obj=_CurrentReport(complete), text=primary)
+    filing.attachments = [SimpleNamespace(document_type="EX-3.2", document="articles.htm", content=charter, is_binary=lambda: False)]
+    assert fetch_8k_edgar.has_vote_table(charter)
+
+    rows = _filing_row("AAA", FilingStamp.of(filing, "0000000001"))
+
+    assert complete in rows[0]["item_text"]
+    assert "30,000,000" not in rows[0]["item_text"]
+    print("SANITY: a referenced charter cannot add nonvoting share counts to a complete voting table.")
+
+
+class _UnreferencedExhibit:
+    document_type = "EX-99.2"
+
+    @property
+    def content(self) -> str:
+        raise AssertionError("An unreferenced exhibit must not be read")
+
+    def is_binary(self) -> bool:
+        return False
+
+
+def test_8k_item_507_reads_only_the_explicit_voting_exhibit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """GPC2019's referenced exhibit supplies every source line; unrelated attachments stay unread."""
+    source = json.loads((Path(__file__).parents[1] / "structure/fixtures/item507_gpc_exhibit.json").read_text(encoding="utf-8"))
+    stub = "The results of the vote of the Company's shareholders is filed with this Current Report on Form 8-K as exhibit 99.1."
+    filing = _fake_8k_filing(
+        accession=source["accession_number"],
+        filing_date="2019-04-23",
+        period_of_report="2019-04-22",
+        items="5.07,9.01",
+        obj=_CurrentReport(stub),
+        text=source["primary_text"],
+    )
+    filing.attachments = [
+        _UnreferencedExhibit(),
+        SimpleNamespace(document_type="EX-99.1", document=source["exhibit_name"], content=source["exhibit_html"], is_binary=lambda: False),
+    ]
+
+    rows = _filing_row("GPC", FilingStamp.of(filing, "0000040987"))
+    text = next(row["item_text"] for row in rows if row["item"] == "5.07")
+    normalized = re.sub(r"\s+", " ", text)
+
+    assert "Exhibit 99.1" in text
+    assert all(re.sub(r"\s+", " ", line).strip() in normalized for line in source["expected_exhibit_text"].splitlines() if line.strip())
+
+    monkeypatch.setattr(recover_8k_item_507, "_filings_by_accession", lambda context, source: {filing.accession_number: filing})
+    original = pd.DataFrame(
+        [{"ticker": "GPC", "cik": "0000040987", "accession_number": filing.accession_number, "filing_date": "2019-04-23", "item_text": stub}]
+    )
+    recovered = recover_8k_item_507._recover(cast(Any, SimpleNamespace(log=fetch_8k_edgar.logger)), original)
+    assert recovered["item_text"].tolist() == [text]
+    print("SANITY: GPC2019's three proposals, every nominee and tally line are retained from explicit Exhibit99.1; EX-99.2 is unread.")
 
 
 def _fake_13d_filing(

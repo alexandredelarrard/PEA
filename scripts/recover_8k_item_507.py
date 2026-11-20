@@ -14,7 +14,8 @@ import pandas as pd
 from edgar import Company
 
 from src.context import Context, get_config_context
-from src.data_extract.utils.edgar_extract.fetch_8k_edgar import _recover_item_507_from_primary
+from src.data_extract.utils.edgar_extract.edgar_driver import FilingStamp
+from src.data_extract.utils.edgar_extract.fetch_8k_edgar import _filing_row
 from src.data_store.schema import Resume, Tables
 
 
@@ -65,10 +66,11 @@ def _recover(context: Context, source: pd.DataFrame) -> pd.DataFrame:
             context.log.warning("%s: accession not found in the stored CIK's 8-K listing", accession)
             continue
         before = str(row.get("item_text") or "")
-        after = _recover_item_507_from_primary(filing, before)
+        rows = _filing_row(str(row["ticker"]), FilingStamp.of(filing, str(row["cik"])))
+        after = next((str(item["item_text"]) for item in rows if item["item"] == "5.07"), before)
         if after == before:
             continue
-        replacement = row.to_dict()
+        replacement = cast(dict[str, object], row.to_dict())
         replacement["item_text"] = after
         recovered.append(replacement)
         context.log.info("%s %s: Item 5.07 %d -> %d chars", row["ticker"], accession, len(before), len(after))

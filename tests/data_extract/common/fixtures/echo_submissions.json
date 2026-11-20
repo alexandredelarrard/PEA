@@ -1,0 +1,147 @@
+{
+  "cik": "0001415404",
+  "entityType": "operating",
+  "sic": "4899",
+  "sicDescription": "Communications Services, NEC",
+  "ownerOrg": "06 Technology",
+  "insiderTransactionForOwnerExists": 1,
+  "insiderTransactionForIssuerExists": 1,
+  "name": "EchoStar CORP",
+  "tickers": [
+    "ECHO"
+  ],
+  "exchanges": [
+    "Nasdaq"
+  ],
+  "ein": "261232727",
+  "lei": null,
+  "description": "",
+  "website": "",
+  "investorWebsite": "",
+  "category": "Large accelerated filer",
+  "fiscalYearEnd": "1231",
+  "stateOfIncorporation": "NV",
+  "stateOfIncorporationDescription": "NV",
+  "addresses": {
+    "mailing": {
+      "street1": "9601 SOUTH MERIDIAN BOULEVARD",
+      "street2": null,
+      "city": "ENGLEWOOD",
+      "stateOrCountry": "CO",
+      "zipCode": "80112",
+      "stateOrCountryDescription": "CO",
+      "isForeignLocation": 0,
+      "foreignStateTerritory": null,
+      "country": null,
+      "countryCode": null
+    },
+    "business": {
+      "street1": "9601 SOUTH MERIDIAN BOULEVARD",
+      "street2": null,
+      "city": "ENGLEWOOD",
+      "stateOrCountry": "CO",
+      "zipCode": "80112",
+      "stateOrCountryDescription": "CO",
+      "isForeignLocation": null,
+      "foreignStateTerritory": null,
+      "country": null,
+      "countryCode": null
+    }
+  },
+  "phone": "303-723-1000",
+  "flags": "",
+  "formerNames": [
+    {
+      "name": "EchoStar Holding CORP",
+      "from": "2007-11-06T05:00:00.000Z",
+      "to": "2008-01-11T05:00:00.000Z"
+    }
+  ],
+  "filings": {
+    "recent": {
+      "accessionNumber": [
+        "0001415404-26-000057",
+        "0001104659-26-121675",
+        "0001415404-11-000013"
+      ],
+      "filingDate": [
+        "2026-11-03",
+        "2026-11-03",
+        "2011-08-05"
+      ],
+      "reportDate": [
+        "2026-10-30",
+        "2026-09-30",
+        "2011-06-08"
+      ],
+      "acceptanceDateTime": [
+        "2026-11-03T13:18:09.000Z",
+        "2026-11-03T13:15:55.000Z",
+        "2011-08-05T21:24:25.000Z"
+      ],
+      "act": [
+        "34",
+        "34",
+        "34"
+      ],
+      "form": [
+        "8-K",
+        "10-Q",
+        "8-K/A"
+      ],
+      "fileNumber": [
+        "001-33807",
+        "001-33807",
+        "001-33807"
+      ],
+      "filmNumber": [
+        "261514423",
+        "261514408",
+        "111015113"
+      ],
+      "items": [
+        "5.07,9.01",
+        "",
+        "2.01,9.01"
+      ],
+      "core_type": [
+        "XBRL",
+        "XBRL",
+        "8-K/A"
+      ],
+      "size": [
+        193782,
+        24825906,
+        548443
+      ],
+      "isXBRL": [
+        1,
+        1,
+        0
+      ],
+      "isInlineXBRL": [
+        1,
+        1,
+        0
+      ],
+      "isXBRLNumeric": [
+        0,
+        1,
+        null
+      ],
+      "primaryDocument": [
+        "sats-20261030x8k.htm",
+        "sats-20260930x10q.htm",
+        "sats8-k8x5x11.htm"
+      ],
+      "primaryDocDescription": [
+        "8-K",
+        "10-Q",
+        ""
+      ]
+    },
+    "files": []
+  },
+  "_source_url": "https://data.sec.gov/submissions/CIK0001415404.json",
+  "_captured_on": "2026-11-20"
+}

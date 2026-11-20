@@ -14,12 +14,13 @@ import warnings
 from types import SimpleNamespace
 from typing import Any, cast
 
+import edgar
 import pandas as pd
 import pytest
 
 from src.data_extract.utils.common.sec_io import ParseFailureError
 from src.data_extract.utils.edgar_extract import fetch_8k_edgar
-from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, FilingStamp, parse_filing_rows
+from src.data_extract.utils.edgar_extract.edgar_driver import EdgarRun, FilingStamp, _read_key, parse_filing_rows
 from src.data_extract.utils.edgar_extract.fetch_8k_edgar import SEC_8K_FETCH, _filing_row, submission_filings
 from src.data_extract.utils.edgar_extract.fetch_13d_edgar import (
     _ITEM_ANCHORS,
@@ -107,6 +108,24 @@ def _fake_8k_filing(
     filing.obj = (lambda: obj) if obj is not None else (lambda: (_ for _ in ()).throw(RuntimeError("no parse")))
     filing.text = (lambda: text) if text is not None else (lambda: (_ for _ in ()).throw(AssertionError("filing.text() must not be called")))
     return filing
+
+
+@pytest.mark.parametrize("resolved", [False, True])
+def test_8k_unresolved_item_metadata_remains_pending(resolved: bool, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Missing metadata fails the read; a resolved, genuinely empty item list can complete."""
+    filing = _fake_8k_filing(items="")
+    if not resolved:
+        filing = edgar.Filing(cik=1, company="AAA", form="8-K", filing_date="2024-05-01", accession_no=filing.accession_number)
+    units = pd.DataFrame([{"cik": "0000000001", "company": "AAA", "form": "8-K", "filed": "2024-05-01", "accession": filing.accession_number}])
+    monkeypatch.setattr(fetch_8k_edgar.sec_io, "company", lambda cik: SimpleNamespace(cik=cik, get_filings=lambda form: [filing] if resolved else []))
+    monkeypatch.setattr("src.data_extract.utils.edgar_extract.edgar_index.index_filing", lambda *args: filing)
+
+    frames, failed, markers = _read_key(SEC_8K_FETCH, identity_for({"AAA": "1"}), "AAA", "1", units)
+
+    assert len(failed) == int(not resolved)
+    assert markers == int(resolved)
+    assert bool(frames) is resolved
+    print(f"\nSANITY: resolved={resolved}: failed={len(failed)}, markers={markers}; unresolved metadata cannot generate a completion row.")
 
 
 def test_8k_filing_row_reads_current_report_flags():

@@ -392,5 +392,5 @@ def company(cik_or_ticker: str | int) -> Any:
 
 
 def company_filings(entity: Any, forms: Sequence[str]) -> Any:
-    """`entity.get_filings(form=forms)` (every submissions page) under the retry policy."""
-    return sec_call(entity.get_filings, form=forms, label=f"filings {getattr(entity, 'cik', '?')}")
+    """List every submissions page using EdgarTools' list-valued form filter and the retry policy."""
+    return sec_call(entity.get_filings, form=list(forms), label=f"filings {getattr(entity, 'cik', '?')}")

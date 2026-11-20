@@ -1,12 +1,6 @@
-"""
-fetch_8k_edgar.py (src/data_extract/utils/edgar_extract/fetch_8k_edgar.py)
-------------------------------------------------------------------------
-SEC Form 8-K filings -> `sec_8k`, one row per (ticker, accession, item code).
-Item codes come from EDGAR's submissions metadata (the issuer's `Company` listing, read only for
-keys with documents to fetch); `has_earnings` / `has_press_release` and the per-item text come from
-edgartools' typed `CurrentReport` (`sec_io.filing_obj`). A filing with no item code becomes an
-empty-filing marker. A transient SEC failure raises and fails the filing; a parse failure keeps a
-best-effort row. Financial statements in attached earnings releases are out of scope.
+"""SEC 8-K rows at (ticker, accession, item), using submissions item metadata and CurrentReport text.
+Unresolved metadata and transient reads remain pending; parse failures retain best-effort item rows.
+Only a resolved filing with no items becomes an empty marker. Attached earnings statements are out of scope.
 """
 
 from __future__ import annotations
@@ -20,7 +14,7 @@ from typing import Any, cast
 import pandas as pd
 
 from src.data_extract.utils.common import sec_io
-from src.data_extract.utils.common.sec_io import TransientReadError, filing_obj, filing_text
+from src.data_extract.utils.common.sec_io import ParseFailureError, TransientReadError, filing_obj, filing_text
 from src.data_extract.utils.edgar_extract.edgar_driver import EdgarFetch, FilingStamp, parse_filing_rows
 from src.data_extract.utils.structure.votes.guard import has_vote_table
 from src.data_store.schema import Resume, Tables
@@ -122,7 +116,9 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
     (not None, so a cold table never infers the column as TEXT); a transient read raises."""
     filing = stamp.filing
     # Item codes come off the filing index, read before the parse so a code-less filing skips it.
-    items = getattr(filing, "items", "") or ""
+    if not hasattr(filing, "items"):
+        raise ParseFailureError(f"{stamp.accession_number}: 8-K item metadata was not resolved")
+    items = filing.items or ""
     item_list = [i.strip() for i in str(items).split(",") if i.strip()]
     if not item_list:
         return []
@@ -164,7 +160,7 @@ def submission_filings(ticker: str, df_units: pd.DataFrame) -> dict[str, Any]:
     """The listed 8-Ks as edgartools `EntityFiling`s (item codes, primary document), by accession.
 
     One `Company` listing per CIK holding listed units; an unresolvable CIK is warned and its units
-    fall back to the plain index filing. A transient SEC failure raises."""
+    fall back to the plain index filing, whose missing item metadata keeps it pending. A transient SEC failure raises."""
     wanted = set(df_units["accession"].astype(str))
     out: dict[str, Any] = {}
     for cik in df_units["cik"].astype(str).unique():
@@ -184,7 +180,7 @@ def submission_filings(ticker: str, df_units: pd.DataFrame) -> dict[str, Any]:
         )
     if missing := sorted(wanted - out.keys()):
         logger.warning(
-            "8-K: %s %d indexed filing(s) absent from the submissions listing, read without item codes: %s",
+            "8-K: %s %d indexed filing(s) absent from the submissions listing, kept pending: %s",
             ticker,
             len(missing),
             ", ".join(missing[:20]),

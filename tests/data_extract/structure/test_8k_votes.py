@@ -26,25 +26,29 @@ to be the geometries that broke the deterministic parser, because they are the L
 from __future__ import annotations
 
 import json
+import logging
 import pathlib
 import re
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pandas as pd
+import pytest
 
+from src.data_extract.utils.structure.votes.fetch import fetch_8k_votes_llm
 from src.data_extract.utils.structure.votes.flatten import (
     _DIRECTOR_COLS,
     _LOW_SUPPORT_THRESHOLD,
     _ROLE_CATEGORIES,
     _VOTE_FIELDS,
     _clean_proposal_number,
-    _prepare_frame,
+    _director_columns,
     _proposal_rows,
 )
 from src.data_extract.utils.structure.votes.guard import (
     _MIN_ITEM_TEXT_CHARS,
-    _name_in_source,
-    has_vote_numbers,
+    _grounded_nominees,
+    _source_counts,
     mentions_preliminary,
     rejection_reason,
 )
@@ -62,6 +66,9 @@ from src.data_extract.utils.structure.votes.vote_schema import (
     ProposalVote as _ProposalVote,
 )
 from src.data_store.schema import Tables
+from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
+from src.utils.window import WindowRun
+from tests.data_extract.fake_context import extract_config
 
 Item507Extract: Any = _Item507Extract
 NomineeVote: Any = _NomineeVote
@@ -108,9 +115,25 @@ def _extract(*proposals: Any, meeting: str | None = None, preliminary: bool | No
     return Item507Extract(meeting_date=meeting, is_preliminary=preliminary, proposals=list(proposals))
 
 
-def _rows(key: str, extract: Any, roles: dict | None = None, titles: dict | None = None, **overrides) -> tuple[list[dict], int]:
-    f = _filing(key, **overrides)
-    return _proposal_rows(f["ticker"], f, extract, _text(key), roles or {}, titles or {})
+def _rows(key: str, extract: Any, roles: dict | None = None, titles: dict | None = None, **overrides: Any) -> tuple[list[dict], int]:
+    """Compose the production leaf operations around a hand-read known-truth answer."""
+    filing, text = _filing(key, **overrides), _text(key)
+    counts = _source_counts(text)
+    prepared = []
+    for proposal in extract.proposals:
+        nominees, rejected = _grounded_nominees(proposal, text, counts)
+        ptype = (proposal.proposal_type or "").strip().lower()
+        prepared.append(
+            {
+                **proposal.model_dump(exclude={"nominees"}),
+                "proposal_type": ptype if ptype in PROPOSAL_TYPES else None,
+                "proposal_number": _clean_proposal_number(proposal.proposal_number),
+                "nominees": nominees,
+                "rejected": rejected,
+                "director": _director_columns(nominees, roles or {}, titles or {}) if ptype == "director_election" else {},
+            }
+        )
+    return _proposal_rows(filing["ticker"], filing, extract, prepared, counts, mentions_preliminary(text))
 
 
 # --------------------------------------------------------------------------- #
@@ -181,10 +204,10 @@ def test_a_narrative_with_no_comma_grouped_number_has_no_vote_table():
     """The cheapest fabrication guard there is. NKE's 5.07(d) response is prose about the
     board's decision and contains no share count anywhere; pad it past the length floor and
     the number test still catches it."""
-    assert not has_vote_numbers(_text("nke_2011"))
+    assert rejection_reason(_text("nke_2011")) == "no comma-grouped number -- no vote table"
     padded = _text("nke_2011") + " " * (_MIN_ITEM_TEXT_CHARS + 100)
     assert rejection_reason(padded) == "no comma-grouped number -- no vote table"
-    assert has_vote_numbers(_text("aapl_2025"))
+    assert rejection_reason(_text("aapl_2025")) is None
 
 
 def test_a_fabricated_nominee_is_dropped_and_the_real_ones_survive():
@@ -209,29 +232,25 @@ def test_a_real_name_carrying_invented_numbers_is_still_dropped():
     assert rejected == 2 and rows == []
 
 
-def test_a_name_wrapped_around_its_own_vote_numbers_is_not_rejected():
-    """Measured on PTC's 2010 filing during the Phase-6 run: edgartools wraps a narrow name
-    column, so the vote numbers land BETWEEN the two halves of the name --
-
-        Paul                       100,753,338     1,735,851     7,486,441
-        A. Lacy
-
-    -- and a contiguous substring check discarded three CORRECTLY read nominees. The token
-    fallback survives the wrap; the fabrications still fail it, which is the point.
-    """
-    wrapped = (
-        "                          For          Withheld       Broker Non-Votes\n"
-        "  Paul              100,753,338       1,735,851          7,486,441\n"
-        "  A. Lacy\n"
-        "  Michael            65,279,989      37,209,200          7,486,441\n"
-        "  E. Porter\n"
+def test_a_name_wrapped_around_its_own_vote_numbers_is_not_rejected() -> None:
+    """Wrapped source names survive; a valid count cannot rescue an invented name."""
+    text = "For Withheld Broker Non-Votes\nPaul 100,753,338 1,735,851 7,486,441\nA. Lacy\nMichael 65,279,989 37,209,200 7,486,441\nE. Porter"
+    proposal = _election(
+        [
+            _nominee(name, votes, None)
+            for name, votes in [
+                ("Paul A. Lacy", 100753338),
+                ("Michael E. Porter", 65279989),
+                ("John Doe", 100753338),
+                ("Jane Smith", 100753338),
+                ("A. E. Nobody", 100753338),
+            ]
+        ]
     )
-    assert _name_in_source("Paul A. Lacy", wrapped)
-    assert _name_in_source("Michael E. Porter", wrapped)
-    assert not _name_in_source("John Doe", wrapped)
-    assert not _name_in_source("Jane Smith", wrapped)
-    # a middle initial is in every proxy, so it must not be what carries a match
-    assert not _name_in_source("A. E. Nobody", wrapped)
+    nominees, rejected = _grounded_nominees(proposal, text, _source_counts(text))
+    assert [nominee["name"] for nominee in nominees] == ["Paul A. Lacy", "Michael E. Porter"]
+    assert rejected == 3
+    print("SANITY: both wrapped real names survive; all three invented names fail despite a real source count.")
 
 
 def test_a_non_director_proposal_with_no_grounded_number_is_rejected():
@@ -545,7 +564,7 @@ def test_an_amendment_is_stored_as_its_own_rows_and_nothing_is_deduped():
     carries the accession and the two filings coexist."""
     first, _ = _rows("aapl_2025", _extract(_election(_AAPL_NOMINEES)))
     amended, _ = _rows("aapl_2025", _extract(_election(_AAPL_NOMINEES)), accession_number="0001140361-25-999999", form="8-K/A", is_amendment=1.0)
-    df = _prepare_frame(first + amended)
+    df = pd.DataFrame(first + amended)
     assert len(df) == 2  # both survive the PK collapse
     assert set(df["accession_number"]) == {"0001140361-25-005876", "0001140361-25-999999"}
     assert df["period_of_report"].nunique() == 1  # ...and union on the same meeting
@@ -705,25 +724,89 @@ def test_every_primary_key_column_is_non_null_in_a_built_row():
     assert [r["proposal_seq"] for r in rows] == [1.0, 2.0, 3.0]
 
 
-def test_a_meeting_and_its_amendment_both_survive_a_real_upsert(sqlite_store):
-    """Rule 2 through the actual store, not just `drop_duplicates`: the PK carries the
-    accession, so the original and the 8-K/A coexist and the reader unions them on
-    (ticker, period_of_report)."""
-    first, _ = _rows("aapl_2025", _extract(_election(_AAPL_NOMINEES), _AAPL_AUDITOR))
-    amended, _ = _rows("aapl_2025", _extract(_election(_AAPL_NOMINEES)), accession_number="0001140361-25-999999", form="8-K/A", is_amendment=1.0)
-    sqlite_store.save(Tables.sec_8k_votes, _prepare_frame(first))
-    sqlite_store.save(Tables.sec_8k_votes, _prepare_frame(amended))
+def test_a_meeting_and_its_amendment_both_survive_a_real_upsert(sqlite_store: Any) -> None:
+    """Ordinary extraction saves originals/amendments separately and reuses both decisions."""
+    original = _filing("aapl_2025").to_dict()
+    amended = {**original, "accession_number": "0001140361-25-999999", "form": "8-K/A", "is_amendment": 1.0}
+    df_source = pd.DataFrame([{**row, "item": "5.07"} for row in [original, amended]])
+    for column in ("filing_date", "period_of_report"):
+        df_source[column] = pd.to_datetime(df_source[column])
+    sqlite_store.save(Tables.sec_8k, df_source)
+    config = extract_config()
+    context: Any = SimpleNamespace(
+        store=sqlite_store,
+        config=config,
+        log=logging.getLogger(__name__),
+        run=WindowRun("full", "known-truth vote persistence", pd.Timestamp("2026-11-20")),
+    )
+    answers = {
+        original["accession_number"]: _extract(_election(_AAPL_NOMINEES), _AAPL_AUDITOR),
+        amended["accession_number"]: _extract(_election(_AAPL_NOMINEES)),
+    }
+    calls: list[str] = []
 
+    def run(tasks: list[LlmTask]) -> list[LlmResult]:
+        calls.extend(str(cast(pd.Series, task.meta["filing"])["accession_number"]) for task in tasks)
+        return [LlmResult(seq=task.seq, task=task, parsed=answers[str(cast(pd.Series, task.meta["filing"])["accession_number"])]) for task in tasks]
+
+    extractor: Any = SimpleNamespace(run=run)
+    fetch_8k_votes_llm(context, ["AAPL"], extractor)
     back = sqlite_store.load(Tables.sec_8k_votes)
-    print("\n=== SANITY: one meeting, two filings, through a real upsert ===")
-    print(back[["ticker", "accession_number", "form", "proposal_seq", "proposal_type"]].to_string(index=False))
-    assert len(back) == 3  # 2 proposals + 1, nothing collapsed
-    assert back["accession_number"].nunique() == 2
-    assert set(back["form"]) == {"8-K", "8-K/A"}
+    assert len(back) == 3 and back.accession_number.nunique() == 2
+    assert set(back.form) == {"8-K", "8-K/A"}
+    fetch_8k_votes_llm(context, ["AAPL"], extractor)
+    assert len(calls) == 2 and len(sqlite_store.load(Tables.sec_8k_votes)) == 3
+    print("SANITY: ordinary extraction persisted 3 original/amended rows; a second full run made zero additional calls/writes.")
 
-    # re-saving the same rows must UPDATE, not duplicate -- that is the incremental contract
-    sqlite_store.save(Tables.sec_8k_votes, _prepare_frame(first))
-    assert len(sqlite_store.load(Tables.sec_8k_votes)) == 3
+
+@pytest.mark.parametrize(
+    "value,text,expected",
+    [
+        (225998400, "225,998,399.658", True),
+        (1966933, "1,966,932.972", True),
+        (2383249, "2,383,248.712", True),
+        (225998399, "225,998,399.658", False),
+        (225998401, "225,998,399.658", False),
+        (22599840, "225,998,399.658", False),
+        (2383249, "2,383,248.712%", False),
+        (92, "91.45%", False),
+        (92, "91.45 %", False),
+        (91, "91.45", False),
+        (234, "1,234", False),
+        (0, "10", False),
+        (1234, "1,234", True),
+        (1234, "1,234.", True),
+        (12, "12", True),
+        (0, "0", True),
+        (None, "0", False),
+    ],
+)
+def test_source_count_tokens_match_whole_share_policy(value: float | None, text: str, expected: bool) -> None:
+    actual = value is not None and int(round(value)) in _source_counts(text)
+    assert actual is expected
+    print(f"SANITY: source={text!r}, candidate={value}, grounded={actual}; complete tokens and fractional rounding agree.")
+
+
+def test_apa_fractional_source_counts_survive_the_flat_row_path() -> None:
+    """APA's printed fractional special-meeting tally grounds all three correct rounded counts."""
+    text = "Votes For\tVotes Against\tAbstentions\n225,998,399.658\t1,966,932.972\t2,383,248.712"
+    proposal = _plain("Approve the Issuance Proposal", "company_proposal", 225998400, 1966933, 2383249)
+    counts = _source_counts(text)
+    nominees, rejected = _grounded_nominees(proposal, text, counts)
+    prepared = [{**proposal.model_dump(exclude={"nominees"}), "nominees": nominees, "rejected": rejected, "director": {}}]
+    filing = pd.Series(
+        {
+            "accession_number": "0001193125-24-078943",
+            "cik": "0001841666",
+            "form": "8-K",
+            "filing_date": "2024-03-27",
+            "period_of_report": "2024-03-27",
+        }
+    )
+    rows, rejected = _proposal_rows("APA", filing, _extract(proposal), prepared, counts, False)
+    assert rejected == 0 and len(rows) == 1
+    assert [rows[0][field] for field in _VOTE_FIELDS[:3]] == [225998400, 1966933, 2383249]
+    print("SANITY: APA source 225,998,399.658/1,966,932.972/2,383,248.712 survives as 225998400/1966933/2383249.")
 
 
 if __name__ == "__main__":

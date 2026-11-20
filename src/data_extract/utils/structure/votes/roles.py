@@ -1,13 +1,4 @@
-"""
-roles.py  (src/data_extract/utils/structure/votes/roles.py)
-------------------------------------------------------------
-Join each nominee to the nearest prior proxy so a vote row knows whether it is about the
-CEO, another executive officer, or a non-employee director.
-
-The key is `person_key` from `def14a/gender.py` -- the SAME definition the DEF 14A gender
-consensus groups on, so a nominee that matches there matches here. The per-filing
-`unmatched` count is stored rather than swallowed: that number IS this join's error rate.
-"""
+"""Resolve nominee roles from each proxy table's independently nearest prior eligible snapshot."""
 
 from __future__ import annotations
 
@@ -16,95 +7,97 @@ from typing import Any, cast
 import pandas as pd
 
 from src.context import Context
-from src.data_extract.utils.structure.def14a.gender import person_key
-from src.data_extract.utils.structure.def14a.validate import clean_text
 from src.data_store.schema import Tables
 from src.utils.data_policy import source_read_window
 from src.utils.filer_tables import def14a_evidence_mask
+from src.utils.names import person_key
+from src.utils.string import clean_text
 
 
-# --------------------------------------------------------------------------- #
-# Role categorisation                                                          #
-# --------------------------------------------------------------------------- #
 def _role_source(context: Context, ticker: str) -> dict[str, pd.DataFrame]:
-    """The three narrow proxy reads the role map needs, done ONCE per ticker.
-
-    Per (ticker, meeting) would re-read the same rows ~17 times for a ticker with 17
-    annual meetings. Each read is projected to the columns the map actually uses -- an
-    unprojected read of these tables is forbidden (AGENTS.md) and would pull the whole
-    `def14a_json` blob along with it.
-    """
-
-    frames: dict[str, pd.DataFrame] = {}
-    for key, table, columns in (
-        ("ceo", Tables.def14a_llm, list(Tables.def14a_llm.read_columns)),
-        ("exec", Tables.def14a_executive_comp, ["ticker", "as_of", "name", "title", "fiscal_year"]),
-        ("director", Tables.def14a_director_comp, ["ticker", "as_of", "name"]),
-    ):
-        window = source_read_window(context.config, table, context.run.as_of)
-        df_rows = (
-            context.store.load(table, columns=columns, where={"ticker": ticker}, since=window.start, until=window.end, optional=True)
-            if window is not None
-            else None
+    """Read the three projected proxy sources once for this ticker, within their source windows."""
+    # Load each table once before filtering the parent evidence.
+    parent_window = source_read_window(context.config, Tables.def14a_llm, context.run.as_of)
+    exec_window = source_read_window(context.config, Tables.def14a_executive_comp, context.run.as_of)
+    director_window = source_read_window(context.config, Tables.def14a_director_comp, context.run.as_of)
+    df_parent = (
+        context.store.load(
+            Tables.def14a_llm,
+            columns=list(Tables.def14a_llm.read_columns),
+            where={"ticker": ticker},
+            since=parent_window.start,
+            until=parent_window.end,
+            optional=True,
         )
-        frames[key] = df_rows if df_rows is not None else pd.DataFrame()
+        if parent_window is not None
+        else None
+    )
+    df_exec = (
+        context.store.load(
+            Tables.def14a_executive_comp,
+            columns=["ticker", "as_of", "name", "title", "fiscal_year"],
+            where={"ticker": ticker},
+            since=exec_window.start,
+            until=exec_window.end,
+            optional=True,
+        )
+        if exec_window is not None
+        else None
+    )
+    df_director = (
+        context.store.load(
+            Tables.def14a_director_comp,
+            columns=["ticker", "as_of", "name"],
+            where={"ticker": ticker},
+            since=director_window.start,
+            until=director_window.end,
+            optional=True,
+        )
+        if director_window is not None
+        else None
+    )
 
-    # Parent retries alone do not establish an eligible proxy identity.
-    parent = frames["ceo"]
-    usable = parent.loc[def14a_evidence_mask(parent)] if not parent.empty else parent
-    frames["ceo"] = usable.reindex(columns=["ticker", "as_of", "ceo_name_proxy"])
-    return frames
-
-
-def _latest_before(df: pd.DataFrame, meeting_date: object) -> pd.DataFrame:
-    """The rows of the single NEAREST PRIOR proxy, i.e. the one whose roster was on the
-    ballot. A proxy filed AFTER the meeting describes the board the meeting elected, so
-    using it would categorise a nominee by the outcome of the vote being categorised."""
-    if df.empty or "as_of" not in df.columns or meeting_date is None:
-        return df.iloc[0:0]
-    as_of = pd.to_datetime(df["as_of"], errors="coerce")
-    prior = df[as_of <= pd.Timestamp(cast(Any, meeting_date))]
-    if prior.empty:
-        return prior
-    return prior[pd.to_datetime(prior["as_of"], errors="coerce") == as_of[prior.index].max()]
+    # A parent retry row does not establish an eligible proxy identity.
+    parent = df_parent.loc[def14a_evidence_mask(df_parent)] if df_parent is not None else pd.DataFrame()
+    return {
+        "ceo": parent.reindex(columns=["ticker", "as_of", "ceo_name_proxy"]),
+        "exec": df_exec if df_exec is not None else pd.DataFrame(),
+        "director": df_director if df_director is not None else pd.DataFrame(),
+    }
 
 
 def _role_map(source: dict[str, pd.DataFrame], meeting_date: object) -> tuple[dict[str, str], dict[str, str]]:
-    """`(person_key -> role, person_key -> title)` from the nearest prior proxy.
+    """Nearest-prior roles/titles, with CEO > executive > non-employee precedence."""
+    # Resolve the latest eligible date independently for each table.
+    prior: dict[str, pd.DataFrame] = {}
+    for kind, df_rows in source.items():
+        if df_rows.empty or "as_of" not in df_rows.columns or meeting_date is None:
+            prior[kind] = df_rows.iloc[0:0]
+            continue
+        as_of = pd.to_datetime(df_rows["as_of"], errors="coerce")
+        df_eligible = df_rows[as_of <= pd.Timestamp(cast(Any, meeting_date))]
+        prior[kind] = df_eligible[pd.to_datetime(df_eligible["as_of"], errors="coerce") == as_of[df_eligible.index].max()]
+    df_exec = prior["exec"]
+    if not df_exec.empty and "fiscal_year" in df_exec.columns:
+        years = pd.to_numeric(df_exec["fiscal_year"], errors="coerce")
+        df_exec = df_exec[years == years.max()] if years.notna().any() else df_exec
 
-    Precedence is CEO > executive officer > non-employee director, because a
-    CEO-and-director appears in two of the three sources and the more specific role is
-    the informative one. Item 402(k) membership IS the definition of a non-employee
-    director, so `def14a_director_comp` needs no independent independence test.
-    """
+    # Apply the same stored person key and precedence to the selected rosters.
     roles: dict[str, str] = {}
     titles: dict[str, str] = {}
-
-    for _, r in _latest_before(source["director"], meeting_date).iterrows():
-        key = person_key(r.get("name"))
+    for _, row in prior["director"].iterrows():
+        key = person_key(row.get("name"))
         if key:
             roles[key] = "non_employee"
-
-    execs = _latest_before(source["exec"], meeting_date)
-    if not execs.empty and "fiscal_year" in execs.columns:
-        years = pd.to_numeric(execs["fiscal_year"], errors="coerce")
-        if years.notna().any():
-            execs = execs[years == years.max()]
-    for _, r in execs.iterrows():
-        key = person_key(r.get("name"))
+    for _, row in df_exec.iterrows():
+        key = person_key(row.get("name"))
+        title = clean_text(row.get("title"))
         if key:
             roles[key] = "exec_officer"
-            title = clean_text(r.get("title"))
-            if title:
-                titles[key] = title
-
-    for _, r in _latest_before(source["ceo"], meeting_date).iterrows():
-        key = person_key(r.get("ceo_name_proxy"))
+        if key and title:
+            titles[key] = title
+    for _, row in prior["ceo"].iterrows():
+        key = person_key(row.get("ceo_name_proxy"))
         if key:
             roles[key] = "ceo"
-
     return roles, titles
-
-
-#: Every column `_director_columns` produces. Named once so a non-election row can be
-#: filled with the identical NULL key set -- a row that simply OMITS them would make the

@@ -10,7 +10,7 @@ import logging
 import pathlib
 import re
 import types
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import pytest
@@ -19,10 +19,8 @@ from src.data_extract.utils.edgar_extract.empty_markers import marker_frame
 from src.data_extract.utils.structure.def14a.def14a_schema import Def14AExtract as _Def14AExtract
 from src.data_extract.utils.structure.def14a.flatten import _result_frames as def14a_result_frames
 from src.data_extract.utils.structure.votes import fetch as votes_fetch
-from src.data_extract.utils.structure.votes.flatten import _marker_frame as votes_marker_frame
 from src.data_extract.utils.structure.votes.vote_schema import Item507Extract as _Item507Extract
 from src.data_store.schema import Tables
-from src.gpt_extract.transformers.gpt_getter import _frames_by_table
 from src.gpt_extract.utils.schemas_gpt import LlmResult, LlmTask
 from src.utils.window import WindowRun
 from tests.data_extract.fake_context import extract_config
@@ -37,8 +35,7 @@ _SHORT_ACCESSION = "0000000009-25-000001"
 
 
 class _CountingLLM:
-    """`LLMExtractor` stand-in: answers every task with zero proposals (or an error for accessions in
-    `failing`), saves through the caller's flatten like the real extractor, and counts the calls."""
+    """Return empty answers or configured API errors; count calls while the vote worker saves."""
 
     calls: list[str] = []
     tasks: list[LlmTask] = []
@@ -47,18 +44,17 @@ class _CountingLLM:
     def __init__(self, context: Any, config: Any, action: str | None = None, threads: int | None = None) -> None:
         self._context = context
 
-    def run_extraction(self, tasks: Any, flatten: Any = None, group_key: Any = None) -> list[LlmResult]:
+    def run(self, tasks: list[LlmTask]) -> list[LlmResult]:
+        """Return provider answers; the real vote worker owns all decision writes."""
         results = []
         for task in tasks:
-            accession = str(task.meta["filing"]["accession_number"])
+            accession = str(cast(pd.Series, task.meta["filing"])["accession_number"])
             type(self).calls.append(accession)
             type(self).tasks.append(task)
             if accession in type(self).failing:
                 results.append(LlmResult(seq=task.seq, task=task, parsed=None, error="APIError: 500"))
             else:
                 results.append(LlmResult(seq=task.seq, task=task, parsed=Item507Extract(proposals=[])))
-        for table, parts in _frames_by_table(results, flatten).items():
-            self._context.store.save(table, pd.concat(parts, ignore_index=True))
         return results
 
 
@@ -124,7 +120,10 @@ def test_configured_filing_day_completion_is_per_ticker(sqlite_store, llm) -> No
     first = _source_row("aapl_2025")
     other = {**first, "ticker": "OTHER", "accession_number": "other-filing"}
     source = pd.DataFrame([first, other])
-    sqlite_store.save(Tables.sec_8k_votes, votes_fetch._marker_frame(str(first["ticker"]), pd.Series(first)))
+    sqlite_store.save(
+        Tables.sec_8k_votes,
+        marker_frame(Tables.sec_8k_votes, {key: first[key] for key in ("ticker", "accession_number", "filing_date", "cik", "form")}),
+    )
     todo = votes_fetch._plan_todo(context, source)
     assert todo.accession_number.tolist() == ["other-filing"]
     print("SANITY: configured filing-date references normalize saved dates and never complete another ticker on the same day.")
@@ -209,7 +208,9 @@ def _ddl_columns(name: str) -> set[str]:
 
 def test_the_llm_markers_carry_only_ddl_columns() -> None:
     filing = pd.Series({**_source_row("aapl_2025")})
-    votes = votes_marker_frame("AAPL", filing)
+    votes = marker_frame(
+        Tables.sec_8k_votes, {"ticker": "AAPL", **{key: filing.get(key) for key in ("accession_number", "filing_date", "cik", "form")}}
+    )
     task = LlmTask(seq=0, payload="proxy", schema=Def14AExtract, table=Tables.def14a_llm, meta={"ticker": "AAPL", "filing": filing})
     proxy = def14a_result_frames(LlmResult(seq=0, task=task, parsed=Def14AExtract()))[Tables.def14a_llm]
 
@@ -221,3 +222,23 @@ def test_the_llm_markers_carry_only_ddl_columns() -> None:
     )
     print("\n=== SANITY CHECK: AC-016, LLM marker columns ===")
     print(f"  sec_8k_votes marker {sorted(votes.columns)}; def14a_llm marker {sorted(proxy.columns)}; all declared in sql/schema.sql.")
+
+
+def test_vote_ticker_saves_survive_a_later_programming_failure(sqlite_store: Any, llm: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    """An earlier ticker is durable and a later ticker cannot call after a programming failure."""
+    context = _context(sqlite_store, short=False)
+    extractor = votes_fetch.LLMExtractor(context, context.config, action=votes_fetch.VOTES_ACTION)
+    original = extractor.run
+
+    def fail_second(tasks: list[LlmTask]) -> list[LlmResult]:
+        if any(task.meta["ticker"] == "AEE" for task in tasks):
+            raise TypeError("known programming failure")
+        return original(tasks)
+
+    monkeypatch.setattr(extractor, "run", fail_second)
+    with pytest.raises(TypeError, match="known programming failure"):
+        votes_fetch.fetch_8k_votes_llm(context, _tickers(), extractor)
+    expected = str(_FIXTURES["aapl_2025"]["accession_number"])
+    assert llm.calls == [expected]
+    assert sqlite_store.distinct(Tables.sec_8k_votes, "accession_number") == [expected]
+    print("SANITY: AAPL's decision is durable; AEE raises; JPM makes no later call or write.")

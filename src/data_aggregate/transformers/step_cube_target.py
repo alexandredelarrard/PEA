@@ -139,12 +139,21 @@ class StepCubeTarget(Step):
         return None if df_rows is None else point_in_time(df_rows, self._config, Tables.sharadar_fundamentals_history, calendar)
 
     def _load_macro(self, calendar: pd.DatetimeIndex, window: Window | None) -> pd.DataFrame:
-        """Publish macro inputs once; the latest source quote wins a shared eligible session."""
+        """Publish shared beta/target inputs, exempting SPY/gold/oil from added lag."""
         series = sorted({MACRO_MARKET_SERIES, *MACRO_CUBE_FACTORS.values(), *DAILY_MACRO_LEVELS})
         df_rows = load_source(self._context, Tables.prices_macro, series, columns=["date", "ticker", "close"], window=window)
         if df_rows is None:
             raise RuntimeError(f"{Tables.prices_macro.name}: configured macro history is unavailable")
-        df_rows = point_in_time(df_rows, self._config, Tables.prices_macro, calendar)
+        immediate = df_rows["ticker"].isin((MACRO_MARKET_SERIES, "gold", "oil"))
+        no_lag = self._config.copy()
+        no_lag.data.tables[Tables.prices_macro.name].pit.lag_days = 0
+        df_rows = pd.concat(
+            [
+                point_in_time(df_rows.loc[immediate], no_lag, Tables.prices_macro, calendar),
+                point_in_time(df_rows.loc[~immediate], self._config, Tables.prices_macro, calendar),
+            ],
+            ignore_index=True,
+        )
         df_rows = df_rows.sort_values("date", key=market_days, kind="stable")
         df_rows["as_of"] = df_rows["as_of"].dt.as_unit(calendar.unit)
         return df_rows.pivot_table(index="as_of", columns="ticker", values="close", aggfunc="last").sort_index().rename_axis("date")

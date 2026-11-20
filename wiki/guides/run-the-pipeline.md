@@ -7,7 +7,7 @@ tags:
   - guide
   - runbook
   - operations
-source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
+source_commit: 67116e24333d5f1afc11ba837afbdeaf41753a7a
 integration_parents:
   - f06e3781ccb5756a0a1406895182de37329e282b
   - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
@@ -100,6 +100,18 @@ The universe is [configs/universe.yml](../../configs/universe.yml): each ticker 
 | Structure/text | `sec-def14a-text`, `sec-def14a-llm`, `sec-employees-text`, `sec-employees-llm`, `sec-8k-votes`, `filing-text` | The `*-text` walks read SEC and store the LLM inputs (`sec_def14a_text`, `sec_employees_text`); the `*-llm` passes and `sec-8k-votes` read only stored text and spend API calls. |
 | Earnings calls | `extract-earnings-calls [-F] [-t]` | Uses dated identity to expand current/predecessor symbols, reads scoped metadata with footer symbol pruning, then fetches only missing/reissued payloads under the current ticker. An ordinary saved key uses its own latest `date` minus the configured 180-calendar-day tail; a rowless key starts at its own source floor. Older alias repairs need an explicit bounded full run. `-F` additionally reconciles source-absent calls for tickers present in the source, retaining vanished-ticker/failed-read safeguards. |
 | Resume tooling | `resume-plan`, `edgar-index`, `markers` | `resume-plan [--table T] [-t X] [--timings]` prints each EDGAR document table's work list by key class, read-only. `edgar-index [-F]` refreshes the local filing index (`-F` downloads every quarter again); the DAG runs it once a night before the eight EDGAR walks, and a walk run alone skips its own refresh when today's (`refreshed_today`) already covered its window, so the index is refreshed once per night. `markers --count` counts empty-filing markers per table; `markers --delete` removes them, for a rollback only. |
+
+### 8-K votes and bounded recovery
+
+Run `sec-8k-items` before `sec-8k-votes`; the latter reads stored Item 5.07 narratives and spends model calls. A raw-text repair does not automatically re-decide completed vote keys, including empty markers: the vote planner preserves them even in full mode.
+
+[recover_8k_item_507.py](../../scripts/recover_8k_item_507.py) previews repairs to existing Item 5.07 rows through the ordinary 8-K row producer:
+
+```bash
+rtk "$PY" scripts/recover_8k_item_507.py --tickers KO --accessions ACCESSION
+```
+
+The default is a dry run. `--write` also requires exact `--accessions` and `--backup` pointing to an existing pre-write backup, and refuses a partial requested scope. It updates only the selected raw narratives; missing raw keys and already-decided vote outputs need their own explicitly scoped recovery. Follow the [recovery guide](./large-backfills-and-recovery.md) before production work.
 
 ### Replacements for the per-source zip and identity commands
 

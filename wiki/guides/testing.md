@@ -7,7 +7,7 @@ tags:
   - guide
   - testing
   - validation
-source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
+source_commit: 67116e24333d5f1afc11ba837afbdeaf41753a7a
 integration_parents:
   - f06e3781ccb5756a0a1406895182de37329e282b
   - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
@@ -48,6 +48,12 @@ Then take a deterministic sample appropriate to the time-series or cross-section
 Use synthetic known-truth inputs when correctness requires an exact answer: tag resolution, TTM arithmetic, ratio formulas, beta recovery, or parser branching.
 
 Pair the known-truth test with a real-data coverage check when the practical question is whether the fixed path fires on actual filings. The synthetic half proves the math; the real half proves reach.
+
+### SEC 8-K votes
+
+The [8-K producer tests](../../tests/data_extract/institutionals/test_fetch_8k_13d_edgar.py) cover metadata decisions, heading variants, section boundaries and referenced voting exhibits. In this mixed 8-K/13D file, select `-k "test_8k or test_sec_8k"` or exact node IDs; `-k 8k` also matches the filename and selects unrelated 13D cases. [Vote tests](../../tests/data_extract/structure/test_8k_votes.py) cover rounding, grounding and flattening; [marker tests](../../tests/data_extract/structure/test_votes_markers.py) cover persistence and retry decisions. `test_votes_flow_keeps_shape_and_depth` in the [shape checks](../../tests/data_extract/test_step_code_shape.py) resolves the exported entry point, its level-3 ticker worker and flat level-4 leaves.
+
+For a recovery comparison, freeze source-confirmed missing meeting filings and successful controls before changing prompts or selecting text. Check every expected proposal, nominee and disclosed tally, with explicit null/zero semantics. Reuse captured source bytes for parser trials and model responses only for an identical request identity. Run the ordinary producer/extractor against a disposable `DataStore`: `Context(save=False)` does not prevent these paths from writing.
 
 ## Shared fixtures
 

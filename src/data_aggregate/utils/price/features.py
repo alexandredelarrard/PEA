@@ -41,11 +41,9 @@ def pit_fields(
     df_close: pd.DataFrame, df_factor: pd.DataFrame, basis: ShareBasis, inputs: PriceInputs, bugfix: dict, df_vendor: pd.DataFrame | None
 ) -> dict[str, pd.DataFrame]:
     """Compute quoted PIT prices, the forward basis F and public security counts without enlarging class scope."""
-    # Forward basis F on the price grid; null where quote units are unsupported.
+    # Forward basis F on the price grid; an unverified quote unit is the identity ratio 1 (warned once at load).
     index = pd.DatetimeIndex(df_close.index)
-    unknown = sorted(inputs.unsupported_units & set(df_close.columns))
     df_basis = security_basis_frame(basis, index, df_close.columns)
-    df_basis.loc[:, unknown] = np.nan
 
     # Quoted security prices where the level and vendor price factors are verified.
     df_quote = as_traded_close(df_close, df_factor, basis)
@@ -66,8 +64,6 @@ def pit_fields(
     for ticker in sorted({owner.ticker for owner in inputs.predecessors} & set(df_close.columns)):
         names = pd.Series(ticker, index=index)
         df_shares[ticker] = df_shares[ticker].where(canonical_source_support(names, pd.Series(index, index=index), inputs.predecessors))
-    if unknown:
-        logger.warning("PIT share units unsupported for %s; source observations remain unchanged", ", ".join(unknown))
     # The vendor class coefficient puts the count in canonical-class equivalents (BRK-B, V), so mcap = close x count.
     df_shares = df_shares.where(df_close.notna()) * df_scale
     df_cap = df_quote * df_shares

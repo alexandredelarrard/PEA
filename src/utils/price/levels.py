@@ -146,7 +146,7 @@ def rebase_security_quantities(
     """Convert declared source quantities into target-date canonical security units.
 
     ordinary_per_source is 1 for ordinary counts, U(source) for canonical quotes,
-    or an independently evidenced filed-class conversion. Unknown units stay null.
+    or an independently evidenced filed-class conversion. An unverified quote unit is the identity ratio 1.
     """
     if not quantities.index.equals(ordinary_per_source.index):
         raise ValueError("Source quantity units must be index-aligned")
@@ -234,8 +234,8 @@ def split_cum_product(splits: pd.DataFrame | None, tickers: pd.Series, dates: pd
 def security_basis(basis: ShareBasis, tickers: pd.Series, dates: pd.Series) -> pd.Series:
     """Forward quantity basis F(d): genuine events dated at or before d times the quote-unit change at or before d.
 
-    A quoted-security quantity converts between dates by `q_t = q_s * F_t / F_s`; null where events are unavailable
-    or units unknown. Later events never change F before their date.
+    A quoted-security quantity converts between dates by `q_t = q_s * F_t / F_s`; null where events are unavailable.
+    An unverified quote unit contributes the identity ratio 1. Later events never change F before their date.
     """
     products = split_cum_product(basis.actual.rename(columns={"value": "ratio"}), tickers, dates)
     start = pd.Series(pd.Timestamp("1900-01-01"), index=dates.index)

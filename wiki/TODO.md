@@ -491,7 +491,7 @@ Deferred at the close of the EDGAR text-table split (local, gitignored run dir `
 - **P3 — `scripts/report_fundamentals_sweep.py` names a deleted producer.** Its docstring credits `scripts/sweep_fundamentals_resolution.py` with the `data/fundamentals_sweep` ledgers it reads; no script writes them now. Retire the report with the ledgers, or keep the name as provenance (user decision).
 
 - Confirm `purchase_pct_prior_120d_vs_peers` on the full universe (sample peers covered 22%); study measured a date x sector z (~17 names), the cube leg uses the 7-name `frames.peers` basket.
-- **P2 — APTV and CRH short-flow and FTD legs are 100% NaN (2026-11-14).** Cause is the price layer, not the tenure mask: Sharadar categorises both as `ADR Common Stock`, `unsupported_units` in [adjustments.py](../src/utils/price/adjustments.py) marks their quote units unknown, `security_basis` is NULL for every date, so `terminal_basis_factor` is NaN and `terminal_rows` nulls every RegSHO and FTD quantity. Needs a verified quote-unit convention for both (a `configs/` bugfix entry or an explicit domestic-primary override; user approval).
+- **P3 — APTV and CRH quote units are assumed ratio 1 (2026-11-19).** Sharadar categorises both as `ADR Common Stock` and `unsupported_units` in [adjustments.py](../src/utils/price/adjustments.py) flags them, but the price part now publishes `security_basis` 1.0 and one aggregated warning per run instead of NaN, so their short-flow, FTD, momentum and valuation legs are populated. Level ratios (turnover, `ic_ftd_to_adv20`, per-share) may be off by the ADR ratio until each has a verified `quote_units` entry (a `configs/` bugfix entry; user approval).
 
 
 ## Cluster 13F follow-ups (2026-11-18)

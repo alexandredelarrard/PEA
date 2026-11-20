@@ -17,6 +17,7 @@ from src.constants.constants_price import DAILY_MACRO_LEVELS, MACRO_CUBE_FACTORS
 from src.context import Context
 from src.data_aggregate.transformers import step_cube_target as target_step
 from src.data_aggregate.transformers.step_cube_target import StepCubeTarget
+from src.data_aggregate.utils.price.frames import load_trading_calendar
 from src.data_aggregate.utils.target.betas import estimate_all_betas
 from src.data_aggregate.utils.target.factors import assemble_factor_panel
 from src.data_store.schema import Table, Tables
@@ -303,11 +304,13 @@ def test_macro_loader_real_sources_follow_selective_lag(sqlite_store: DataStore,
     # Load the projected live payload once; all replay writes use disposable SQLite.
     load_dotenv(find_dotenv(usecwd=True))
     source = DataStore(get_engine().execution_options(postgresql_readonly=True))
+    calendar = load_trading_calendar(_context(source, until))
+    calendar = calendar[calendar >= pd.Timestamp(since)]
     series = sorted({MACRO_MARKET_SERIES, *MACRO_CUBE_FACTORS.values(), *DAILY_MACRO_LEVELS})
     df_source = source.load(Tables.prices_macro, columns=["date", "ticker", "close"], where={"ticker": series}, since=since, until=until)
     assert df_source is not None and set(df_source["ticker"]) == set(series), "required real-source witnesses are missing"
     frozen = df_source.copy(deep=True)
-    calendar = pd.DatetimeIndex(pd.to_datetime(df_source.loc[df_source["ticker"] == MACRO_MARKET_SERIES, "date"]).sort_values().unique(), name="date")
+    assert not calendar.empty, "required production trading calendar is missing"
     context = _context(sqlite_store, until)
     context.store.create_declared(Tables.prices_macro)
     context.store.save(Tables.prices_macro, df_source)
@@ -351,5 +354,5 @@ def test_macro_loader_real_sources_follow_selective_lag(sqlite_store: DataStore,
     pd.testing.assert_frame_equal(df_source, frozen, check_exact=True)
     assert context.config.data.tables[Tables.prices_macro.name].pit.lag_days == 2
     print(
-        f"SANITY: {since}..{until}: {len(df_source)} real observations/{len(calendar)} sessions/{len(series)} series; exact selective dates/values and zero-lag market/gold/oil factors; source unchanged."
+        f"SANITY: {since}..{until}: {len(df_source)} real observations/{len(calendar)} production sessions/{len(series)} series; exact selective dates/values and zero-lag market/gold/oil factors; source unchanged."
     )

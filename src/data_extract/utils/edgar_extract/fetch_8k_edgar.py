@@ -147,6 +147,7 @@ def _filing_row(ticker: str, stamp: FilingStamp) -> list[dict]:
         "primary_document": stamp.primary_document,
     }
 
+    # Emit one row per reported item, keeping unavailable body text empty.
     return [
         {**base, "item": item, "item_tag": _HIGH_SIGNAL_ITEMS.get(item, "other_unclassified_item"), "item_text": item_texts[item] or ""}
         for item in item_list

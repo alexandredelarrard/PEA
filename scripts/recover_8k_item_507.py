@@ -57,6 +57,7 @@ def _filings_by_accession(context: Context, source: pd.DataFrame) -> dict[str, o
 
 
 def _recover(context: Context, source: pd.DataFrame) -> pd.DataFrame:
+    """Return changed Item 5.07 rows parsed through the ordinary filing producer."""
     filings = _filings_by_accession(context, source)
     recovered: list[dict[str, object]] = []
     for _, row in source.sort_values(["ticker", "filing_date"]).iterrows():

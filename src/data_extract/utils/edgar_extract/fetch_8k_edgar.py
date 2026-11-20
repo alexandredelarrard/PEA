@@ -76,7 +76,7 @@ _HIGH_SIGNAL_ITEMS = {
     "9.01": "financial_statements_and_exhibits",
 }
 
-_ITEM_507_HEADING_RE = re.compile(r"(?im)^[ \t]*(?:i\s*tem[.\s]*5\.07\b[.:\t ]*|5\.07[ \t]*[-–—][ \t]*)")
+_ITEM_507_HEADING_RE = re.compile(r"(?im)^[ \t]*(?:i\s*tems?[.\s–—-]*5\.07(?!\d)[.:\t ]*|5\.07[ \t.:–—-]+)")
 _NEXT_8K_SECTION_RE = re.compile(r"(?im)^[ \t]*(?:i\s*tem[.\s]*\d\.\d{2}\b|\d\.\d{2}[ \t]*[-–—]|SIGNATURES?\b)")
 
 

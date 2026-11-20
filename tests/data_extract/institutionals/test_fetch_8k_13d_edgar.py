@@ -262,11 +262,15 @@ def test_8k_item_507_reads_primary_without_results_follow_signal() -> None:
         ("5.07 -", "", "5.07"),
         ("Item 5.07", "", "5.02,9.01"),
         ("Item 5.07", "", ""),
+        ("Items 5.07. Submission of Matters to a Vote of Security Holders.", "", "5.07"),
+        ("5.07 Submission of Matters to a Vote of Security Holders.", "", "5.07"),
+        ("Item \u2014 5.07 Submission of Matters to a Vote of Security Holders.", "", "5.07"),
+        ("Item 5.07Submission of Matters to a Vote of Security Holders.", "", "5.07"),
     ],
 )
 def test_8k_item_507_recovers_all_proposals_from_primary(heading: str, structured: str, items: str) -> None:
     """Blank, partial and metadata-omitted slices keep both internal proposal tables."""
-    primary = f"""{heading} Submission of Matters to a Vote of Security Holders.
+    primary = f"""{heading}
 Item 1. Election of Directors
 Name              Votes For      Votes Against      Abstain
 Ann Example       1,234,567      23,456             1,234
@@ -287,6 +291,17 @@ SIGNATURES
     assert "UNRELATED SECTION" not in vote["item_text"]
     assert vote["n_items"] == len([item for item in items.split(",") if item]) + int("5.07" not in items)
     print(f"SANITY: {heading!r}, metadata={items!r}: both proposal tables recovered; the following8-K section is excluded.")
+
+
+@pytest.mark.parametrize("heading", ["Item 5.070", "5.070"])
+def test_8k_item_507_does_not_match_a_longer_item_code(heading: str) -> None:
+    primary = f"{heading} Submission of Matters to a Vote of Security Holders.\nVotes For 1,234,567; Against 23,456; Abstain 1,234.\nSIGNATURES"
+    filing = _fake_8k_filing(items="", obj=_CurrentReport(""), text=primary)
+
+    rows = _filing_row("AAA", FilingStamp.of(filing, "0000000001"))
+
+    assert rows == []
+    print(f"SANITY: {heading!r} cannot invent an Item5.07 row from a longer item code.")
 
 
 def test_8k_item_507_prefers_bounded_primary_over_longer_contaminated_slice() -> None:

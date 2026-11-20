@@ -30,6 +30,7 @@ def test_assessment_always_refreshes_and_accepts_current_config_and_calendar(
     config.lgbm.num_boost_round = 10
     config.model.horizons = [30, 90]
     config.model.diagnostics.pdp_grid = 31
+    config.model.diagnostics.shap_top_features = 7
     context: Any = SimpleNamespace(
         config=config, config_dir=Path("configs"), paths={"DATA_STORE": tmp_path}, save=True, log=logging.getLogger("fresh-assessment")
     )
@@ -67,6 +68,7 @@ def test_assessment_always_refreshes_and_accepts_current_config_and_calendar(
     assert calls == [60, 60]
     assert (run / "report.html").read_text() == "new report 2"
     assert json.loads((run / "assessment/metadata.json").read_text())["diagnostics"]["pdp_grid"] == 31
+    assert json.loads((run / "assessment/metadata.json").read_text())["diagnostics"]["shap_top_features"] == 7
     assert any(record.levelno == logging.WARNING for record in caplog.records) == expected_warning
     assert "older" in caplog.text and "2026-10" in caplog.text
     assert not (tmp_path / "newer/assessment").exists()

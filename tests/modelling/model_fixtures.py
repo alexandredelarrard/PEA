@@ -23,7 +23,12 @@ def make_config(**overrides: Any) -> DictConfig:
     """Config with `model`, `lgbm`, `random_forest`, `linear` blocks; `overrides` deep-merge."""
     base = {
         "seed": SEED,
-        "model": {"label_column": "y", "ensemble": ["elasticnet", "lgbm", "random_forest"], "weight_decay": {"enabled": False, "half_life_years": 5}},
+        "model": {
+            "label_column": "y",
+            "ensemble": ["elasticnet", "lgbm", "random_forest"],
+            "weight_decay": {"enabled": False, "half_life_years": 5},
+            "diagnostics": {"shap_top_features": 50},
+        },
         "lgbm": {
             "task": "regression",
             "learning_rate": 0.05,

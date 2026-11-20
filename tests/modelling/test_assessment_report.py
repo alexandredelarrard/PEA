@@ -1,4 +1,4 @@
-"""The report contains only three offline plot areas and all retained effects at every horizon."""
+"""The offline report preserves chart evidence and caps displayed effects by cutoff importance."""
 
 from __future__ import annotations
 
@@ -18,6 +18,8 @@ from src.modelling.utils.artifacts import configuration_snapshot, file_identity
 from src.modelling.utils.assessment import write_json
 from src.modelling.utils.assessment_metrics import native_error_diagnostics, temporal_diagnostics, universe_diagnostics
 from src.modelling.utils.metrics import per_day_zscore
+from src.validate.checks.modelling import _effect_payload_checks
+from src.validate.result import Finding
 from tests.modelling.model_fixtures import make_config
 
 
@@ -45,6 +47,7 @@ def _report_artifacts(run: Path, n_tickers: int = 6) -> None:
     )
     state = {
         "run_id": run.name,
+        "diagnostics": {"shap_top_features": 50},
         "horizons": {},
         "windows": {},
         "complete": True,
@@ -177,6 +180,57 @@ def _read_payload(run: Path) -> tuple[dict, str]:
     raw = re.search(r'<script id="assessment-data" type="application/json">(.*?)</script>', text, re.S)
     assert raw is not None
     return json.loads(raw.group(1)), text
+
+
+@pytest.mark.parametrize("limit", [2, 50, 80])
+def test_report_limits_features_using_cutoff_importance(tmp_path: Path, limit: int) -> None:
+    _report_artifacts(tmp_path)
+    state_path = tmp_path / "assessment/metadata.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["diagnostics"]["shap_top_features"] = limit
+    write_json(state_path, state)
+    expected = {}
+    for path in (tmp_path / "assessment").rglob("curves.json"):
+        curves = json.loads(path.read_text(encoding="utf-8"))
+        template = curves["features"]["x"]
+        offset = int(path.parents[2].name[1:]) + len(path.parent.name)
+        curves["features"] = {f"feature_{index:02}": {**template, "importance": float(((index + offset) % 55) // 2)} for index in range(55)}
+        if path.parent.parent.name == "fold0":
+            ranked = sorted(curves["features"], key=lambda feature: (-curves["features"][feature]["importance"], feature))
+            expected[(path.parents[2].name[1:], path.parent.name)] = ranked[:limit]
+        else:
+            for values in curves["features"].values():
+                values["importance"] = -values["importance"]
+        write_json(path, curves)
+    before = {path: path.read_bytes() for path in (tmp_path / "assessment").rglob("curves.json")}
+
+    payload, _ = _read_payload(tmp_path)
+
+    for horizon, analysis in payload["analysis"].items():
+        findings: list[Finding] = []
+        _effect_payload_checks(tmp_path / f"assessment/h{horizon}", payload["families"], list(range(1, 6)), analysis["effects"], findings, limit)
+        assert not findings
+        for family, folds in analysis["effects"].items():
+            for curves in folds.values():
+                assert list(curves["features"]) == expected[(horizon, family)]
+                assert len(curves["features"]) == min(limit, 55)
+    assert before == {path: path.read_bytes() for path in (tmp_path / "assessment").rglob("curves.json")}
+    print(
+        f"SANITY: report limit {limit} selects cutoff-ranked features consistently across all folds, models and horizons; full evidence is unchanged."
+    )
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_report_refuses_nonpositive_feature_limit(tmp_path: Path, limit: int) -> None:
+    _report_artifacts(tmp_path)
+    state_path = tmp_path / "assessment/metadata.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["diagnostics"]["shap_top_features"] = limit
+    write_json(state_path, state)
+    with pytest.raises(ValueError, match="shap_top_features must be positive"):
+        render_assessment(tmp_path)
+    assert not (tmp_path / "report.html").exists()
+    print(f"SANITY: invalid report feature limit {limit} is refused before publication.")
 
 
 def _native_values(meta: dict, text: str) -> np.ndarray:

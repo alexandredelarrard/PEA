@@ -73,7 +73,10 @@ class StepAssessLongShort(Step):
             "training_completed_at_utc": training["training_completed_at_utc"],
             "assessment_started_at_utc": now.isoformat(),
             "observation_frontier": str(calendar[-1].date()),
-            "diagnostics": {key: diagnostics[key] for key in ("shap_sample", "dependence_sample", "pdp_grid", "pdp_background", "rolling_window")},
+            "diagnostics": {
+                key: diagnostics[key]
+                for key in ("shap_sample", "shap_top_features", "dependence_sample", "pdp_grid", "pdp_background", "rolling_window")
+            },
             "evaluation_start": str(self._options.evaluation_start),
             "seed": int(self._config.seed),
             "fitted_feature_cols": training["feature_cols"],

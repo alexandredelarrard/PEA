@@ -468,12 +468,11 @@ linear:
     30:
     # PRICES / MOMENTUM cube (27)
     - volume_trend_63
-    # - seasonal_h60
     - seasonal_h90
 
     # FUNDAMENTALS cube (218)
     - f_accruals_ratio
-    - f_acquisition_intensity_vs_hist
+    # - f_acquisition_intensity_vs_hist
     # - f_altman_z   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
     - f_asset_growth
     # - f_book_yield   # OFF tier 2: insignificant + unstable + weak contribution
@@ -483,7 +482,7 @@ linear:
     - f_deferred_rev_intensity
     - f_deferred_rev_intensity_vs_hist
     - f_dividend_growth
-    - f_dividend_payout_ratio
+    # - f_dividend_payout_ratio
     - f_dividend_yield
     # - f_dps_growth
     - f_dso_change_vs_hist
@@ -494,7 +493,7 @@ linear:
     - f_ebit_interest_coverage_vs_hist
     - f_fcf_to_ev_vs_peers
     # - f_fixed_cost_coverage_margin   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
-    - f_gmroi
+    # - f_gmroi
     - f_gmroi_vs_hist
     - f_grossMargins
     - f_grossMargins_vs_hist
@@ -517,19 +516,19 @@ linear:
     - f_refinancing_risk_vs_hist
     - f_reported_expected_eps_yield
     - f_reported_expected_eps_yield_vs_hist
-    - f_reported_expected_ttm_yield
+    # - f_reported_expected_ttm_yield
     - f_returnOnEquity
     - f_returnOnEquity_vs_hist
-    # - f_revenue_per_employee   # OFF tier 2: insignificant + unstable + weak contribution
-    - f_revenue_per_employee_vs_hist
+    - f_revenue_per_employee   # OFF tier 2: insignificant + unstable + weak contribution
+    # - f_revenue_per_employee_vs_hist
     # - f_roa_vol_8q   # OFF tier 2: insignificant + unstable + weak contribution
     # - f_roic_ex_intangibles   # OFF tier 2: insignificant + unstable + weak contribution
-    - f_roic_incl_intangibles
+    # - f_roic_incl_intangibles
     - f_roic_incl_intangibles_vs_peers
     # - f_sbc_intensity   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
-    - f_sbc_to_ocf
+    # - f_sbc_to_ocf
     - f_sbc_to_ocf_vs_hist
-    - f_y_margin_vs_ttm_vs_hist
+    # - f_y_margin_vs_ttm_vs_hist
 
     # TEXT cube (earnings calls) (10)
     # - f_ec_answers_tone_delta
@@ -538,75 +537,69 @@ linear:
     # - f_ec_questions_only_qq_distance   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
     - f_ec_questions_tone
 
-    # INSTITUTIONALS cube (insider, short volume/FTD, 13D/G) (28)
-    - f_ic_insider_buy_value_mcap_180d
-    # - f_ic_insider_buy_value_mcap_60d   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
-    - f_ic_insider_cm_buy_mcap_180d
-    - f_ic_insider_cm_buy_mcap_180d_vs_sector
-    - f_ic_insider_net_buy_ratio_180d
     # SEC 13F cube (per-cluster 13F features) (80)
     - f_ic_cluster_0_net_breadth
     - f_ic_cluster_0_new_position_rate
-    - f_ic_cluster_0_net_share_flow
+    # - f_ic_cluster_0_net_share_flow
     - f_ic_cluster_0_top10_chg
     - f_ic_cluster_0_rank_gap
-    - f_ic_cluster_0_rank_gap_chg
+    # - f_ic_cluster_0_rank_gap_chg
     - f_ic_cluster_0_stickiness
     - f_ic_cluster_0_cap_proximity
     - f_ic_cluster_1_net_breadth
-    - f_ic_cluster_1_new_position_rate
+    # - f_ic_cluster_1_new_position_rate
     - f_ic_cluster_1_net_share_flow
-    - f_ic_cluster_1_top10_chg
-    - f_ic_cluster_1_rank_gap
+    # - f_ic_cluster_1_top10_chg
+    # - f_ic_cluster_1_rank_gap
     - f_ic_cluster_1_rank_gap_chg
-    - f_ic_cluster_1_stickiness
-    - f_ic_cluster_1_cap_proximity
-    - f_ic_cluster_2_net_breadth
+    # - f_ic_cluster_1_stickiness
+    # - f_ic_cluster_1_cap_proximity
+    # - f_ic_cluster_2_net_breadth
     - f_ic_cluster_2_new_position_rate
     - f_ic_cluster_2_net_share_flow
     - f_ic_cluster_2_top10_chg
     - f_ic_cluster_2_rank_gap
-    - f_ic_cluster_2_rank_gap_chg
+    # - f_ic_cluster_2_rank_gap_chg
     - f_ic_cluster_2_stickiness
     - f_ic_cluster_2_cap_proximity
-    - f_ic_cluster_3_net_breadth
+    # - f_ic_cluster_3_net_breadth
     - f_ic_cluster_3_new_position_rate
     - f_ic_cluster_3_net_share_flow
     - f_ic_cluster_3_top10_chg
-    - f_ic_cluster_3_rank_gap
-    - f_ic_cluster_3_rank_gap_chg
+    # - f_ic_cluster_3_rank_gap
+    # - f_ic_cluster_3_rank_gap_chg
     - f_ic_cluster_3_stickiness
     - f_ic_cluster_3_cap_proximity
     - f_ic_cluster_4_net_breadth
-    - f_ic_cluster_4_new_position_rate
+    # - f_ic_cluster_4_new_position_rate
     - f_ic_cluster_4_net_share_flow
     - f_ic_cluster_4_top10_chg
-    - f_ic_cluster_4_rank_gap
+    # - f_ic_cluster_4_rank_gap
     - f_ic_cluster_4_rank_gap_chg
-    - f_ic_cluster_4_stickiness
+    # - f_ic_cluster_4_stickiness
     - f_ic_cluster_4_cap_proximity
     - f_ic_cluster_5_net_breadth
-    - f_ic_cluster_5_new_position_rate
-    - f_ic_cluster_5_net_share_flow
+    # - f_ic_cluster_5_new_position_rate
+    # - f_ic_cluster_5_net_share_flow
     - f_ic_cluster_5_top10_chg
-    - f_ic_cluster_5_rank_gap
+    # - f_ic_cluster_5_rank_gap
     - f_ic_cluster_5_rank_gap_chg
     - f_ic_cluster_5_stickiness
-    - f_ic_cluster_5_cap_proximity
+    # - f_ic_cluster_5_cap_proximity
     - f_ic_cluster_6_net_breadth
-    - f_ic_cluster_6_new_position_rate
-    - f_ic_cluster_6_net_share_flow
+    # - f_ic_cluster_6_new_position_rate
+    # - f_ic_cluster_6_net_share_flow
     - f_ic_cluster_6_top10_chg
-    - f_ic_cluster_6_rank_gap
+    # - f_ic_cluster_6_rank_gap
     - f_ic_cluster_6_rank_gap_chg
-    - f_ic_cluster_6_stickiness
-    - f_ic_cluster_6_cap_proximity
-    - f_ic_cluster_7_net_breadth
+    # - f_ic_cluster_6_stickiness
+    # - f_ic_cluster_6_cap_proximity
+    # - f_ic_cluster_7_net_breadth
     - f_ic_cluster_7_new_position_rate
-    - f_ic_cluster_7_net_share_flow
+    # - f_ic_cluster_7_net_share_flow
     - f_ic_cluster_7_top10_chg
     - f_ic_cluster_7_rank_gap
-    - f_ic_cluster_7_rank_gap_chg
+    # - f_ic_cluster_7_rank_gap_chg
     - f_ic_cluster_7_stickiness
     - f_ic_cluster_7_option_intensity
     - f_ic_cluster_8_net_breadth
@@ -616,13 +609,13 @@ linear:
     - f_ic_cluster_8_rank_gap
     - f_ic_cluster_8_rank_gap_chg
     - f_ic_cluster_8_stickiness
-    - f_ic_cluster_8_flow_x_vol
-    - f_ic_cluster_9_net_breadth
+    # - f_ic_cluster_8_flow_x_vol
+    # - f_ic_cluster_9_net_breadth
     - f_ic_cluster_9_new_position_rate
-    - f_ic_cluster_9_net_share_flow
-    - f_ic_cluster_9_top10_chg
+    # - f_ic_cluster_9_net_share_flow
+    # - f_ic_cluster_9_top10_chg
     - f_ic_cluster_10_net_breadth
-    - f_ic_cluster_10_new_position_rate
+    # - f_ic_cluster_10_new_position_rate
     - f_ic_cluster_10_net_share_flow
     - f_ic_cluster_10_top10_chg
 
@@ -705,7 +698,7 @@ linear:
     - f_rd_capitalized_roic
     # - f_rd_intensity   # OFF tier 1: ~zero contribution (SHAP/coef) in >=5 of 6 folds
     - f_reported_expected_eps_yield
-    - f_reported_expected_ttm_yield
+    # - f_reported_expected_ttm_yield
     - f_returnOnEquity
     - f_returnOnEquity_vs_hist
     - f_revenue_per_employee_vs_hist
@@ -734,19 +727,19 @@ linear:
     # SEC 13F cube (per-cluster 13F features) (80)
     - f_ic_cluster_0_net_breadth
     - f_ic_cluster_0_new_position_rate
-    - f_ic_cluster_0_net_share_flow
+    # - f_ic_cluster_0_net_share_flow
     - f_ic_cluster_0_top10_chg
     - f_ic_cluster_0_rank_gap
-    - f_ic_cluster_0_rank_gap_chg
+    # - f_ic_cluster_0_rank_gap_chg
     - f_ic_cluster_0_stickiness
     - f_ic_cluster_0_cap_proximity
     - f_ic_cluster_1_net_breadth
-    - f_ic_cluster_1_new_position_rate
+    # - f_ic_cluster_1_new_position_rate
     - f_ic_cluster_1_net_share_flow
-    - f_ic_cluster_1_top10_chg
-    - f_ic_cluster_1_rank_gap
+    # - f_ic_cluster_1_top10_chg
+    # - f_ic_cluster_1_rank_gap
     - f_ic_cluster_1_rank_gap_chg
-    - f_ic_cluster_1_stickiness
+    # - f_ic_cluster_1_stickiness
     - f_ic_cluster_1_cap_proximity
     - f_ic_cluster_2_net_breadth
     - f_ic_cluster_2_new_position_rate
@@ -756,44 +749,44 @@ linear:
     - f_ic_cluster_2_rank_gap_chg
     - f_ic_cluster_2_stickiness
     - f_ic_cluster_2_cap_proximity
-    - f_ic_cluster_3_net_breadth
+    # - f_ic_cluster_3_net_breadth
     - f_ic_cluster_3_new_position_rate
     - f_ic_cluster_3_net_share_flow
     - f_ic_cluster_3_top10_chg
-    - f_ic_cluster_3_rank_gap
-    - f_ic_cluster_3_rank_gap_chg
+    # - f_ic_cluster_3_rank_gap
+    # - f_ic_cluster_3_rank_gap_chg
     - f_ic_cluster_3_stickiness
     - f_ic_cluster_3_cap_proximity
     - f_ic_cluster_4_net_breadth
-    - f_ic_cluster_4_new_position_rate
+    # - f_ic_cluster_4_new_position_rate
     - f_ic_cluster_4_net_share_flow
     - f_ic_cluster_4_top10_chg
-    - f_ic_cluster_4_rank_gap
+    # - f_ic_cluster_4_rank_gap
     - f_ic_cluster_4_rank_gap_chg
-    - f_ic_cluster_4_stickiness
+    # - f_ic_cluster_4_stickiness
     - f_ic_cluster_4_cap_proximity
     - f_ic_cluster_5_net_breadth
-    - f_ic_cluster_5_new_position_rate
-    - f_ic_cluster_5_net_share_flow
+    # - f_ic_cluster_5_new_position_rate
+    # - f_ic_cluster_5_net_share_flow
     - f_ic_cluster_5_top10_chg
-    - f_ic_cluster_5_rank_gap
+    # - f_ic_cluster_5_rank_gap
     - f_ic_cluster_5_rank_gap_chg
     - f_ic_cluster_5_stickiness
-    - f_ic_cluster_5_cap_proximity
+    # - f_ic_cluster_5_cap_proximity
     - f_ic_cluster_6_net_breadth
-    - f_ic_cluster_6_new_position_rate
-    - f_ic_cluster_6_net_share_flow
+    # - f_ic_cluster_6_new_position_rate
+    # - f_ic_cluster_6_net_share_flow
     - f_ic_cluster_6_top10_chg
-    - f_ic_cluster_6_rank_gap
+    # - f_ic_cluster_6_rank_gap
     - f_ic_cluster_6_rank_gap_chg
-    - f_ic_cluster_6_stickiness
-    - f_ic_cluster_6_cap_proximity
-    - f_ic_cluster_7_net_breadth
+    # - f_ic_cluster_6_stickiness
+    # - f_ic_cluster_6_cap_proximity
+    # - f_ic_cluster_7_net_breadth
     - f_ic_cluster_7_new_position_rate
-    - f_ic_cluster_7_net_share_flow
+    # - f_ic_cluster_7_net_share_flow
     - f_ic_cluster_7_top10_chg
     - f_ic_cluster_7_rank_gap
-    - f_ic_cluster_7_rank_gap_chg
+    # - f_ic_cluster_7_rank_gap_chg
     - f_ic_cluster_7_stickiness
     - f_ic_cluster_7_option_intensity
     - f_ic_cluster_8_net_breadth
@@ -803,13 +796,13 @@ linear:
     - f_ic_cluster_8_rank_gap
     - f_ic_cluster_8_rank_gap_chg
     - f_ic_cluster_8_stickiness
-    - f_ic_cluster_8_flow_x_vol
-    - f_ic_cluster_9_net_breadth
+    # - f_ic_cluster_8_flow_x_vol
+    # - f_ic_cluster_9_net_breadth
     - f_ic_cluster_9_new_position_rate
-    - f_ic_cluster_9_net_share_flow
-    - f_ic_cluster_9_top10_chg
+    # - f_ic_cluster_9_net_share_flow
+    # - f_ic_cluster_9_top10_chg
     - f_ic_cluster_10_net_breadth
-    - f_ic_cluster_10_new_position_rate
+    # - f_ic_cluster_10_new_position_rate
     - f_ic_cluster_10_net_share_flow
     - f_ic_cluster_10_top10_chg
 

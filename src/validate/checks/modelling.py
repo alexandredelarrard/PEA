@@ -743,9 +743,14 @@ def _full_history_checks(context: Context, run: Path, training: dict, cutoff: di
     return coverage
 
 
-def _effect_payload_checks(output: Path, families: list[str], original_folds: list[int], effects: dict, findings: list[Finding]) -> None:
+def _effect_payload_checks(
+    output: Path, families: list[str], original_folds: list[int], effects: dict, findings: list[Finding], top_features: int
+) -> None:
     folds = {"0", *map(str, original_folds)}
+    selected = {}
     for family in families:
+        cutoff = _read(output / f"fold0/{family}/curves.json")["features"]
+        selected[family] = sorted(cutoff, key=lambda feature: (-cutoff[feature]["importance"], feature))[:top_features]
         _finding(
             findings,
             set(effects[family]) == folds,
@@ -755,6 +760,7 @@ def _effect_payload_checks(output: Path, families: list[str], original_folds: li
         )
     for family, fold in product(families, folds):
         expected = _read(output / f"fold{fold}/{family}/curves.json")
+        expected["features"] = {feature: expected["features"][feature] for feature in selected[family]}
         for values in expected["features"].values():
             if fold == "0":
                 values["scatter"] = {key: values["scatter"][key] for key in ("x", "shap", "raw_x") if key in values["scatter"]}
@@ -764,7 +770,7 @@ def _effect_payload_checks(output: Path, families: list[str], original_folds: li
             findings,
             expected == effects[family][fold],
             "HTML variable effects differ from saved evidence",
-            "Unmodified retained-variable curves/importance and displayed sample",
+            "Configured top cutoff-ranked variable curves/importance and displayed sample",
             family=family,
             fold=fold,
         )
@@ -795,6 +801,7 @@ def _report_checks(run: Path, training: dict, state: dict, findings: list[Findin
             training["folds"][str(horizon)],
             payload["analysis"][str(horizon)]["effects"],
             findings,
+            int(state["diagnostics"]["shap_top_features"]),
         )
     manifest = _read(run / "assessment/report_manifest.json")
     charts = ["temporal", "target_prediction", "importance", "ticker_rmse", "effect"]

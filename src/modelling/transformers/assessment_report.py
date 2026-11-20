@@ -83,7 +83,9 @@ def _native_payload(output: Path, families: list[str]) -> dict[str, Any]:
     return native
 
 
-def _effect_payload(output: Path, families: list[str], windows: dict[str, Any], folds: list[int]) -> dict[str, Any]:
+def _effect_payload(output: Path, families: list[str], windows: dict[str, Any], folds: list[int], top_features: int) -> dict[str, Any]:
+    if top_features < 1:
+        raise ValueError("shap_top_features must be positive")
     if set(windows) != {"0", *(str(fold) for fold in folds)}:
         raise ValueError("Report requires all original folds and cutoff effects")
     effects: dict[str, Any] = {name: {} for name in families}
@@ -101,6 +103,9 @@ def _effect_payload(output: Path, families: list[str], windows: dict[str, Any], 
         retained = set(original["0"]["features"])
         if any(set(curves["features"]) != retained for curves in original.values()):
             raise ValueError(f"{family}: original-fold effect feature inventory differs")
+        selected = sorted(retained, key=lambda feature: (-original["0"]["features"][feature]["importance"], feature))[:top_features]
+        for curves in original.values():
+            curves["features"] = {feature: curves["features"][feature] for feature in selected}
     return effects
 
 
@@ -117,7 +122,9 @@ def _payload(run: Path, assessment_directory: Path | None = None) -> dict[str, A
         analysis[str(horizon)] = {
             "temporal": _temporal_payload(output, families),
             "native": _native_payload(output, families),
-            "effects": _effect_payload(output, families, state["windows"][str(horizon)], training["folds"][str(horizon)]),
+            "effects": _effect_payload(
+                output, families, state["windows"][str(horizon)], training["folds"][str(horizon)], int(state["diagnostics"]["shap_top_features"])
+            ),
         }
     return json_value(
         {

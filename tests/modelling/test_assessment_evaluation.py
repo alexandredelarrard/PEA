@@ -33,7 +33,14 @@ def test_assessment_reads_original_models_and_recomputes_every_score_without_fit
             "ensemble": ["elasticnet"],
             "cv": {"n_splits": 3},
             "assessment": {"read_chunksize": 5000},
-            "diagnostics": {"shap_sample": 20, "dependence_sample": 10, "pdp_grid": 3, "pdp_background": 10, "rolling_window": 3},
+            "diagnostics": {
+                "shap_sample": 20,
+                "shap_top_features": 2,
+                "dependence_sample": 10,
+                "pdp_grid": 3,
+                "pdp_background": 10,
+                "rolling_window": 3,
+            },
         },
     )
     cube = sqlite_store.load(Tables.cube).rename(columns={"target_rank_h60": "target_zscore_h60"})

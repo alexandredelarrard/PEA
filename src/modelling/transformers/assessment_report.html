@@ -122,7 +122,7 @@ async function importance(){
     const sorted=Object.keys(features).sort((a,b)=>features[b].importance-features[a].importance||a.localeCompare(b));
     options($("feature"),sorted,value=>value);
     $("effect-kind").options[0].textContent=linear?"Signed linear contribution":"Signed SHAP dependence";
-    $("importance-note").textContent=linear?"Absolute saved coefficient on training-standardized inputs. Hover shows signed beta. Zero coefficients remain selectable.":"Mean absolute SHAP on the deterministic cutoff backtest sample; all retained variables remain selectable.";
+    $("importance-note").textContent=linear?"Top variables by absolute saved coefficient on training-standardized inputs, limited by the configured report feature count. Hover shows signed beta.":"Top variables by mean absolute SHAP on the deterministic cutoff backtest sample, limited by the configured report feature count.";
     const view=layout((names[m]||m)+" · h"+h, "");view.height=Math.max(360,sorted.length*23+80);
     $("importance").style.height=view.height+"px";
     view.margin={l:Math.min(420,Math.max(170,Math.max(...sorted.map(value=>value.length))*6)),r:30,t:50,b:45};

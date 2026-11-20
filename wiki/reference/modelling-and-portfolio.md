@@ -7,7 +7,7 @@ tags:
   - reference
   - modelling
   - portfolio
-source_commit: 77d1016e79b9d08c289c5894b1282f30a84ea733
+source_commit: ea60c7d9612832515767f9b71338717e887b24b7
 integration_parents:
   - f06e3781ccb5756a0a1406895182de37329e282b
   - 5f7b40bc4dc8379f2e58e8d32acd82a30143b9d1
@@ -56,6 +56,14 @@ A model family is not complete until it has:
 4. persisted artifacts that round-trip through the production prediction path.
 
 Every member, of any family, serializes as one pickle of its fitted transformer (`model_h<h>_<family>.pkl`, without context, config or logger), so a new family round-trips with no extra persistence code.
+
+## Macro timing for betas and targets
+
+`StepCubeTarget._load_macro` in [step_cube_target.py](../../src/data_aggregate/transformers/step_cube_target.py) reads macro data once and publishes the common inputs used by both beta estimation and target neutralization. The macro policy in [data.yml](../../configs/data.yml) sets `lag_days=2`. SPY (`equity_tr`), gold and oil locally use zero added lag; every other consumed series uses the configured lag. Both groups reuse `point_in_time` in [publication.py](../../src/utils/publication.py): source date plus lag, rolled to the next retained market session, with original dates preserved. Extraction and raw macro storage are unchanged.
+
+The existing loader collision rule keeps the latest source quote on each eligible session. Level forward-fill before returns/changes and the separate 21-row carry for estimated betas remain unchanged. [Dedicated timing tests](../../tests/data_aggregate/test_target_macro_dates.py) cover exact exempt inputs, positive configured lags, holiday collisions, nulls and bounded real-source replay.
+
+This is an assumed publication buffer; it does not certify historical release vintages or correct FX source delays. Historical delayed factor operands, betas and targets change. Full beta/target rebuild and cube assembly are required before historical model adoption; an incremental tail is insufficient.
 
 ## PEGY from reported earnings
 

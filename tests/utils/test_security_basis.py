@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import numpy as np
 import pandas as pd
 import pytest
@@ -12,7 +14,7 @@ from src.data_aggregate.utils.common.quotes import lookup_asof
 from src.data_aggregate.utils.price.capitalization import capitalization_observations, project_security_shares
 from src.data_aggregate.utils.price.features import as_traded_volume, security_basis_frame
 from src.data_store.schema import Tables
-from src.utils.price.adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis, unsupported_units, warn_assumed_unit_ratio
 from src.utils.price.levels import convert_quantities, rebase_security_quantities, vendor_observation_factor
 
 
@@ -378,12 +380,31 @@ def test_forward_basis_steps_on_effective_dates_and_folds_quote_units() -> None:
     assert df_basis["IVZ"].eq(1.0).all() and df_basis["AAA"].eq(1.0).all()
     quantity = convert_quantities(100.0, df_basis.at[pd.Timestamp("2022-07-15"), "GOOGL"], df_basis.at[pd.Timestamp("2022-07-18"), "GOOGL"])
     assert quantity == pytest.approx(2000.0, rel=1e-12)
-    unknown = ShareBasis(df_events, df_events, df_events, {}, unknown_units=frozenset({"IVZ"}))
-    assert security_basis_frame(unknown, index, pd.Index(["IVZ"]))["IVZ"].isna().all()
     print(
         "SANITY: F jumps x20 on GOOGL 2022-07-18 and x3 on AMZN 1999-01-05 (F=240 after 2022), IVZ 0.5 consolidation x ADS 2->1 is continuous, "
-        "no-event names stay 1, unknown units are null; 100 pre-split GOOGL shares are 2,000 after."
+        "no-event names stay 1; 100 pre-split GOOGL shares are 2,000 after."
     )
+
+
+def test_unverified_adr_units_are_ratio_one_while_a_verified_entry_keeps_its_own_factor(caplog: pytest.LogCaptureFixture) -> None:
+    df_events = _events([("IVZ", "2007-12-04", 0.5)])
+    basis = ShareBasis(df_events, df_events, df_events, _IVZ_UNITS)
+    df_security = pd.DataFrame(
+        {"ticker": ["IVZ", "APTV", "CRH", "AAA"], "category": ["ADR", "ADR Common Stock", "ADR Common Stock", "Domestic Common Stock"]}
+    )
+    df_actions = pd.DataFrame({"ticker": ["APTV"], "date": pd.to_datetime(["2020-01-03"]), "action": ["adrratiosplit"], "value": [2.0]})
+    tickers = ["IVZ", "APTV", "CRH", "AAA"]
+    assert unsupported_units(df_actions, df_security, tickers, {"share_events": _IVZ_UNITS}) == frozenset({"APTV", "CRH"})
+    with caplog.at_level(logging.WARNING):
+        warn_assumed_unit_ratio(df_actions, df_security, tickers, {"share_events": _IVZ_UNITS})
+    warned = [record.getMessage() for record in caplog.records if "unit ratio 1 assumed" in record.getMessage()]
+    assert len(warned) == 1 and "APTV, CRH" in warned[0] and "IVZ" not in warned[0] and "AAA" not in warned[0]
+    index = pd.DatetimeIndex(["2007-12-03", "2007-12-04"])
+    df_basis = security_basis_frame(basis, index, pd.Index(tickers))
+    assert df_basis["IVZ"].tolist() == [1.0, 1.0]
+    assert df_basis[["APTV", "CRH", "AAA"]].eq(1.0).all().all()
+    assert basis.factor(pd.Series(["IVZ", "APTV"]), pd.Series(pd.to_datetime(["2007-12-03"] * 2)), "units").tolist() == [2.0, 1.0]
+    print("SANITY: APTV and CRH are named in one warning and get unit ratio 1; IVZ keeps its verified ADS 2 -> 1 factor and is not named.")
 
 
 def test_forward_basis_history_is_unchanged_by_a_later_event() -> None:

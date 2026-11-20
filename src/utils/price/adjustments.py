@@ -37,7 +37,6 @@ class ShareBasis:
     price: pd.DataFrame
     policies: dict[str, dict]
     actual_available: bool = True
-    unknown_units: frozenset[str] = frozenset()
 
     def rebase(self, quantities: pd.Series, tickers: pd.Series, source_dates: pd.Series, target_dates: pd.Series) -> pd.Series:
         """Convert ordinary-share quantities between explicit dates using genuine events only.
@@ -85,7 +84,7 @@ class ShareBasis:
         return pd.Series(result.to_numpy(), index=quantities.index, name=quantities.name)
 
     def factor(self, tickers: pd.Series, dates: pd.Series, kind: str) -> pd.Series:
-        """Strict future-event product, or ordinary shares per quoted security for units."""
+        """Strict future-event product, or ordinary shares per quoted security for units (1.0 where no `quote_units` is verified)."""
         if kind != "units":
             if kind not in {"actual", "vendor", "price"}:
                 raise ValueError(f"Unknown share basis {kind!r}")
@@ -98,7 +97,7 @@ class ShareBasis:
                 continue
             hit = tickers.eq(ticker)
             result.loc[hit] = np.where(stamps.loc[hit] < pd.Timestamp(units["date"]), units["before"], units["after"])
-        return result.mask(tickers.isin(self.unknown_units))
+        return result
 
 
 def _closed(record: object, allowed: set[str], required: set[str], label: str) -> dict:
@@ -592,9 +591,11 @@ def quantity_basis(
     """Prepare source-checked genuine events and dated units for consumers of saved prices.
 
     Price creation owns anchor verification and price reconciliation. This adapter checks
-    applicable event evidence without reloading anchors or resolving a price-level factor.
+    applicable event evidence without reloading anchors or resolving a price-level factor. An ADR/ADS
+    without a verified `quote_units` entry keeps the identity unit ratio 1, announced by one warning.
     """
     validate_bugfix(bugfix)
+    warn_assumed_unit_ratio(actions, security, tickers, bugfix)
     df_actual = split_events(actions, yf_splits, report_events=False)
     df_vendor = df_actual.copy()
     sources = {
@@ -619,8 +620,14 @@ def quantity_basis(
         df_empty,
         policies,
         actual_available=actions is not None or yf_splits is not None,
-        unknown_units=unsupported_units(actions, security, tickers, bugfix),
     )
+
+
+def warn_assumed_unit_ratio(df_actions: pd.DataFrame | None, df_security: pd.DataFrame | None, tickers: Sequence[str], bugfix: dict) -> None:
+    """One aggregated warning naming the tickers whose quote-unit ratio is assumed to be 1."""
+    unknown = sorted(unsupported_units(df_actions, df_security, tickers, bugfix))
+    if unknown:
+        log.warning("quote units unverified for %s: unit ratio 1 assumed, values may be off by the ADR/ADS ratio", ", ".join(unknown))
 
 
 def unsupported_units(df_actions: pd.DataFrame | None, df_security: pd.DataFrame | None, tickers: Sequence[str], bugfix: dict) -> frozenset[str]:

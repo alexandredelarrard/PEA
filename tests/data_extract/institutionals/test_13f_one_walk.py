@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, Literal
 from xml.etree import ElementTree
 
 import edgar.exceptions as edgar_exceptions
@@ -155,7 +155,7 @@ def _seed_roster(store: Any, ciks: list[str]) -> None:
 
 def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> list[Window]:
     """Serve bounded index metadata and fake payloads through the real listing/packet path."""
-    by_accession = {filing.accession_number: filing for filing in filings}
+    by_filer = {(filing.cik, filing.accession_number): filing for filing in filings}
     windows: list[Window] = []
     index = pd.DataFrame(
         [(f.cik, "", f.form, pd.Timestamp(f.filing_date), f.accession_number) for f in filings],
@@ -169,7 +169,7 @@ def _patch_walk(monkeypatch: pytest.MonkeyPatch, filings: list[_FakeFiling]) -> 
 
     monkeypatch.setattr(f13.edgar_index, "entries", entries)
     monkeypatch.setattr(f13.edgar_index, "refreshed_today", lambda context, window: True)
-    monkeypatch.setattr(f13.edgar_index, "index_filing", lambda cik, company, form, filed, accession: by_accession[str(accession)])
+    monkeypatch.setattr(f13.edgar_index, "index_filing", lambda cik, company, form, filed, accession: by_filer[(str(cik), str(accession))])
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
     monkeypatch.setattr(f13, "_sleep", lambda wait: None)
     return windows
@@ -495,12 +495,12 @@ def test_empty_cover_is_silent_and_marked_once(filing_store, monkeypatch, caplog
         return real_obj(f, sgml_xml_only=sgml_xml_only)
 
     monkeypatch.setattr(f13, "filing_obj", _spy_obj)
-    saver = f13._Saver(_ctx(filing_store), save_every=1)
+    ctx = _ctx(filing_store, batch_size=1)
 
     with caplog.at_level(logging.WARNING):
-        held = f13._first_pass([filing], saver)
+        held = f13.fetch_13f(ctx)
         first_reads = len(obj_calls)
-        held += f13._first_pass([filing], saver)  # the next walk over the same listing
+        held += f13.fetch_13f(ctx)  # the next walk over the same listing
 
     loud = [f"{r.levelname}: {r.getMessage()}" for r in caplog.records if r.levelno >= logging.WARNING]
     assert not loud and not held, (loud, held)
@@ -537,12 +537,12 @@ def test_zero_count_cover_with_a_positive_total_is_marked_once_keeping_the_total
         return real_obj(f, sgml_xml_only=sgml_xml_only)
 
     monkeypatch.setattr(f13, "filing_obj", _spy_obj)
-    saver = f13._Saver(_ctx(filing_store), save_every=1)
+    ctx = _ctx(filing_store, batch_size=1)
 
     with caplog.at_level(logging.WARNING):
-        held = f13._first_pass([filing], saver)
+        held = f13.fetch_13f(ctx)
         first_reads = len(obj_calls)
-        held += f13._first_pass([filing], saver)
+        held += f13.fetch_13f(ctx)
 
     loud = [f"{r.levelname}: {r.getMessage()}" for r in caplog.records if r.levelno >= logging.WARNING]
     assert not loud and not held, (loud, held)
@@ -651,18 +651,19 @@ def _store(store: Any, filing: _FakeFiling) -> None:
     f13.save_hr_filing(store, manifest, book, None)
 
 
-def test_first_pass_reads_the_done_set_once(filing_store, monkeypatch):
+def test_listing_reads_the_done_set_once(filing_store, monkeypatch):
     """N = 18 filings of M = 6 CIKs: one table-wide done read, not M."""
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
     ciks = [f"{i:010d}" for i in range(1, 7)]
     filings = [_walk_filing(cik, 10 + q, f"{cik}-26-{q:06d}") for cik in ciks for q in range(3)]
+    _patch_walk(monkeypatch, filings)
     calls = _spy_done_reads(monkeypatch)
-    saver = f13._Saver(_ctx(filing_store), save_every=1)
+    ctx = _ctx(filing_store, batch_size=1)
 
-    held = f13._first_pass(filings, saver)
+    held = f13.fetch_13f(ctx)
     first = list(calls)
     calls.clear()
-    f13._first_pass(filings, saver)
+    f13.fetch_13f(ctx)
 
     assert not held and all(len(f.reads) == 1 for f in filings)  # the second walk reads nothing
     assert [(table, scope) for table, scope, _ in first] == [(Tables.sec13f_hr.name, "table")], first
@@ -670,7 +671,7 @@ def test_first_pass_reads_the_done_set_once(filing_store, monkeypatch):
     print(f"SANITY: {len(filings)} filings of {len(ciks)} CIKs -> 1 sec13f_hr done read per walk, not {len(ciks)}; a re-walk reads 0 filings.")
 
 
-def test_first_pass_done_semantics_match_the_per_cik_sets(filing_store, monkeypatch):
+def test_listing_done_semantics_match_the_per_cik_sets(filing_store, monkeypatch):
     """Done = complete in sec13f_hr; markers count, failures do not; an accession listed under two filers is
     done per filer."""
     monkeypatch.setattr(f13, "build_cusip_ticker_map", lambda context, cusips, **kwargs: CMAP)
@@ -687,11 +688,13 @@ def test_first_pass_done_semantics_match_the_per_cik_sets(filing_store, monkeypa
             _store(filing_store, filing)
     failed = _FakeFiling(OTHER, "2026-05-17", "2026-03-31", [], accession="0000000001-26-000017", unparseable=True)
     listing = [filing for filing, _, _ in cases.values()] + [failed]
+    _patch_walk(monkeypatch, listing)
     calls = _spy_done_reads(monkeypatch)
     saver = f13._Saver(_ctx(filing_store), save_every=1)
+    window = Window(pd.Timestamp("2026-05-01"), saver.context.run.as_of)
 
-    f13._first_pass(listing, saver)
-    f13._first_pass(listing, saver)
+    f13._first_pass(f13._listing(saver.context, window), saver)
+    f13._first_pass(f13._listing(saver.context, window), saver)
 
     reread = {name: len(filing.reads) for name, (filing, _, _) in cases.items()}
     assert reread == {name: int(expected) for name, (_, _, expected) in cases.items()}, reread
@@ -702,6 +705,50 @@ def test_first_pass_done_semantics_match_the_per_cik_sets(filing_store, monkeypa
         f"SANITY: re-read once {sorted(k for k, v in reread.items() if v)}; skipped {sorted(k for k, v in reread.items() if not v)}; "
         "the failure is re-read on both walks; per walk 1 table-wide read + 1 per-filer read for the joint accession."
     )
+
+
+@pytest.mark.parametrize("mode", ["incremental", "full", "recovery"])
+def test_only_pending_index_rows_become_filing_objects_and_progress(
+    filing_store: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, mode: Literal["incremental", "full", "recovery"]
+) -> None:
+    gap = _walk_filing(OTHER, 10, "0000000001-26-000010")
+    stored = _walk_filing(OTHER, 12, "0000000001-26-000012")
+    empty = _walk_filing(OTHER, 14, "0000000001-26-000014", lines=[])
+    new = _walk_filing(OTHER, 16, "0000000001-26-000016")
+    for filing in (stored, empty):
+        _store(filing_store, filing)
+    _patch_walk(monkeypatch, [new, stored, gap, empty])
+    ctx = _ctx(filing_store, batch_size=1)
+    ctx.run = WindowRun(mode, "13F pending-list fixture", ctx.run.instant)
+    factory = f13.edgar_index.index_filing
+    constructed: list[str] = []
+    progress: list[int] = []
+
+    def index_filing(cik: Any, company: Any, form: Any, filed: Any, accession: Any) -> Any:
+        constructed.append(str(accession))
+        return factory(cik, company, form, filed, accession)
+
+    def tqdm(filings: list[Any], *, total: int, desc: str) -> list[Any]:
+        assert desc == "13F-HR" and total == len(filings)
+        progress.append(total)
+        return filings
+
+    monkeypatch.setattr(f13.edgar_index, "index_filing", index_filing)
+    monkeypatch.setattr(f13, "tqdm", tqdm)
+    expected = [gap, new] if mode == "incremental" else [gap, stored, empty, new]
+    with caplog.at_level(logging.INFO):
+        assert f13.fetch_13f(ctx) == 0
+    assert constructed == [filing.accession_number for filing in expected]
+    assert progress == [len(expected)]
+    assert [len(filing.reads) for filing in (gap, stored, empty, new)] == ([1, 0, 0, 1] if mode == "incremental" else [1, 1, 1, 1])
+    assert f"{4 - len(expected)} already complete; {len(expected)} pending" in caplog.text
+    assert f"from {len(expected)} filing(s)" in caplog.text
+    if mode == "incremental":
+        constructed.clear()
+        progress.clear()
+        assert f13.fetch_13f(ctx) == 0
+        assert not constructed and not progress
+    print(f"SANITY: {mode}: 4 index rows -> {len(expected)} filing objects and progress entries; stored empty books count as complete.")
 
 
 def test_filing_vintage_builds_the_canonical_checksum_only_without_a_source_checksum(monkeypatch):

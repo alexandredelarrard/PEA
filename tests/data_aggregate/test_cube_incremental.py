@@ -6,7 +6,6 @@ real writer and actual producer tests; retired hard-coded refresh APIs have no c
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -282,7 +281,8 @@ def test_projection_tolerates_an_absent_optional_column() -> None:
     )
 
 
-def test_step_forwards_the_registry_projection_and_configured_bounds() -> None:
+@pytest.mark.parametrize(("warmup_days", "expected_since"), [(None, None), (30, pd.Timestamp("2025-12-03"))], ids=["full-history", "bounded"])
+def test_step_forwards_the_registry_projection_and_configured_bounds(warmup_days: int | None, expected_since: pd.Timestamp | None) -> None:
     calls = []
 
     class Store:
@@ -294,6 +294,7 @@ def test_step_forwards_the_registry_projection_and_configured_bounds() -> None:
             return iter([pd.DataFrame({"ticker": ["AAPL"]})])
 
     config = fixture_config()
+    config.data.tables[Tables.cube_part_institutionals.name].warmup[Tables.sec_13d.name] = warmup_days
     context = SimpleNamespace(
         store=Store(),
         config=config,
@@ -306,19 +307,29 @@ def test_step_forwards_the_registry_projection_and_configured_bounds() -> None:
     table, query = calls[0]
     assert table == Tables.sec_13d and query["project"] and query["columns"] is None
     assert query["where"]["ticker"] == ["AAPL"]
-    assert query["date_col"] == "filing_date" and query["since"] == windows[Tables.sec_13d].start
+    assert windows[Tables.sec_13d] == (None if expected_since is None else Window(expected_since, context.run.as_of))
+    assert query["date_col"] == "filing_date" and query["since"] == expected_since
     assert query["until"] == context.run.as_of
-    print("SANITY: one projected source stream carries the configured filing interval and universe scope.")
+    print(f"SANITY: one projected source stream keeps universe scope and configured bounds: since={expected_since}, until={context.run.as_of}.")
 
 
-def test_universe_scope_is_pushed_down_to_the_read(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(("warmup_days", "expected_since"), [(None, None), (30, pd.Timestamp("2025-12-03"))], ids=["full-history", "bounded"])
+def test_universe_scope_is_pushed_down_to_the_read(
+    sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, warmup_days: int | None, expected_since: pd.Timestamp | None
+) -> None:
     sqlite_store.save(
         Tables.sec_13d,
         pd.DataFrame(
-            {"ticker": ["AAPL", "OUTSIDE"], "accession_number": ["a-1", "o-1"], "rp_seq": 1, "filing_date": pd.to_datetime(["2024-01-02"] * 2)}
+            {
+                "ticker": ["AAPL", "OUTSIDE", "AAPL", "OUTSIDE"],
+                "accession_number": ["a-1", "o-1", "a-2", "o-2"],
+                "rp_seq": 1,
+                "filing_date": pd.to_datetime(["2024-01-02"] * 2 + ["2025-12-05"] * 2),
+            }
         ),
     )
     config = fixture_config()
+    config.data.tables[Tables.cube_part_institutionals.name].warmup[Tables.sec_13d.name] = warmup_days
     context = SimpleNamespace(
         store=sqlite_store,
         config=config,
@@ -337,9 +348,12 @@ def test_universe_scope_is_pushed_down_to_the_read(sqlite_store: DataStore, monk
     result = capital_inputs.load_source(context, Tables.sec_13d, window=windows[Tables.sec_13d])
     assert result is not None and set(result.ticker) == {"AAPL"}
     assert len(calls) == 1 and calls[0]["where"]["ticker"] == ["AAPL"]
-    assert calls[0]["since"] == windows[Tables.sec_13d].start and calls[0]["until"] == context.run.as_of
+    assert windows[Tables.sec_13d] == (None if expected_since is None else Window(expected_since, context.run.as_of))
+    assert calls[0]["since"] == expected_since and calls[0]["until"] == context.run.as_of
     assert calls[0]["date_col"] == "filing_date"
-    print("SANITY: source predicates reach the real store once; outside symbols never enter cleaning.")
+    expected_dates = ["2024-01-02", "2025-12-05"] if expected_since is None else ["2025-12-05"]
+    assert sorted(pd.to_datetime(result["filing_date"]).dt.strftime("%Y-%m-%d")) == expected_dates
+    print(f"SANITY: one scoped store read retains {expected_dates}; outside symbols and out-of-window filings never enter cleaning.")
 
 
 def test_institutional_empty_correction_clears_only_configured_tail(sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -366,10 +380,13 @@ def test_institutional_empty_correction_clears_only_configured_tail(sqlite_store
     print("SANITY: the actual institutional writer clears a valid empty30-calendar-day correction and preserves its older physical prefix.")
 
 
-def test_build_prices_cli_passes_one_root_mode_and_emits_actual_receipt(
+def test_build_prices_cli_passes_one_root_mode_and_persists_price_keys(
     sqlite_store: DataStore, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     context = seed_prices(sqlite_store, tmp_path)
+    cutoff = pd.Timestamp("2022-11-30")
+    expected_keys = sqlite_store.load(Tables.prices, columns=["date", "ticker"], where={"ticker": ["AAA", "BBB"]}, until=cutoff)
+    assert expected_keys is not None
     calls = []
 
     def load(config_path: str, **kwargs: Any) -> tuple[Any, Any]:
@@ -383,10 +400,15 @@ def test_build_prices_cli_passes_one_root_mode_and_emits_actual_receipt(
     assert refused.exit_code == 2 and not calls
     result = runner.invoke(aggregate_cli.cli, ["build-prices", "-F", "--as-of", "2022-11-30"])
     assert result.exit_code == 0, result.output
-    record = json.loads(result.output.strip().splitlines()[-1])
-    assert calls[0]["full"] and record["mode"] == "full"
-    assert record["parts"][Tables.cube_part_prices.name]["tickers"] == ["AAA", "BBB"]
-    assert record["as_of"] == pd.Timestamp("2022-11-30").isoformat()
+    assert len(calls) == 1 and calls[0]["full"]
+    assert pd.Timestamp(calls[0]["as_of"]) == cutoff
+    assert context.run.mode == "full" and context.run.as_of == cutoff
+    actual_keys = sqlite_store.load(Tables.cube_part_prices, columns=["date", "ticker"])
+    assert actual_keys is not None and set(actual_keys["ticker"]) == {"AAA", "BBB"}
+    pd.testing.assert_frame_equal(
+        actual_keys.sort_values(["date", "ticker"]).reset_index(drop=True),
+        expected_keys.sort_values(["date", "ticker"]).reset_index(drop=True),
+    )
     print(
-        "SANITY: the actual CLI fixes mode/as_of once, rejects an undeclared ticker rebuild and emits its committed component window as the final JSON line."
+        "SANITY: the actual CLI fixes mode/as_of once, rejects an undeclared ticker rebuild and persists exactly the expected price keys for both tickers."
     )

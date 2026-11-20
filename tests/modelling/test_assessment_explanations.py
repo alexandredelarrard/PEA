@@ -20,6 +20,7 @@ from src.utils.config import read_config
 def test_explain_tree_uses_actual_config_and_preserves_score_artifacts(pdp: bool, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     config = read_config("./configs")
     assert config.model.diagnostics.pdp_grid == 30 and config.model.diagnostics.pdp_background == 2000
+    assert config.model.diagnostics.shap_top_features == 50
     assert "pdp_grid_points" not in config.model.diagnostics
     panel = pd.DataFrame(
         {

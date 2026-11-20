@@ -115,6 +115,31 @@ def test_actual_builder_publishes_quoted_prices_and_split_carried_counts(sqlite_
     )
 
 
+def test_unverified_adr_units_default_to_ratio_one_with_one_warning(sqlite_store: Any, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    context = seed_prices(sqlite_store, tmp_path)
+    sqlite_store.save(
+        Tables.sharadar_tickers,
+        pd.DataFrame(
+            {"table": ["SEP", "SEP"], "permaticker": [1, 2], "ticker": ["AAA", "BBB"], "category": ["Domestic Common Stock", "ADR Common Stock"]}
+        ),
+    )
+    with caplog.at_level(logging.WARNING):
+        run_cube(StepCubePrices(context, context.config), full=True)
+    df_prices = sqlite_store.load(Tables.cube_part_prices)
+    df_b = df_prices.loc[df_prices["ticker"].eq("BBB")].sort_values("date")
+    assert df_b["security_basis"].eq(1.0).all()
+    assert df_b["close_pit"].eq(10.0).all() and df_b["volume_pit"].eq(1000.0).all()
+    assert df_b["shares_outstanding_pit"].iloc[1:].eq(300.0).all() and df_b["mcap_pit"].iloc[1:].eq(3_000.0).all()
+    df_a = df_prices.loc[df_prices["ticker"].eq("AAA")].sort_values("date")
+    assert df_a["close_pit"].iloc[:5].eq(100.0).all() and df_a["security_basis"].iloc[5:].eq(4.0 * df_a["security_basis"].iloc[0]).all()
+    warned = [record.getMessage() for record in caplog.records if "unit ratio 1 assumed" in record.getMessage()]
+    assert len(warned) == 1 and "BBB" in warned[0] and "AAA" not in warned[0]
+    print(
+        "SANITY: an ADR-category ticker with no verified quote_units gets security_basis 1.0 and non-null close_pit 10, "
+        "shares 300, mcap 3,000 and volume_pit 1,000 on every bar, one warning names only it, and the domestic split ticker is unchanged."
+    )
+
+
 def test_historical_prefix_invalidation_reaches_before_old_warmup(sqlite_store: Any, tmp_path: Path) -> None:
     context = seed_prices(sqlite_store, tmp_path)
     step = StepCubePrices(context, context.config)
@@ -389,7 +414,6 @@ def test_pit_fields_refuse_an_unproven_predecessor_count_owner() -> None:
         actions=None,
         splits=df_events.rename(columns={"value": "ratio"}),
         predecessors=(),
-        unsupported_units=frozenset(),
     )
     expected = pit_fields(df_close, df_close * 0 + 1, basis, inputs, {}, None)
     inputs = replace(inputs, predecessors=(PredecessorSeries("AAA", "OLD", "0000000001", None, index[1]),))

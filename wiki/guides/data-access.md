@@ -111,12 +111,20 @@ Plan from the database, never from a file or a full table read. Each extracted t
 Fetch rules:
 
 - A key's frontier is its latest stored date in the contract's frontier column, markers included, so a filing read with no data is not listed again.
-- A market-wide walk (the 13F filings) keeps one table-wide frontier. A FINRA day file covers every symbol, so short interest reads the union of the days its keys need.
+- The market-wide 13F walk subtracts stored complete accessions from its configured filing window. A ticker subset also stops at the stored table-wide filing frontier unless an explicit filing window is supplied. A FINRA day file covers every symbol, so short interest reads the union of the days its keys need.
 - Save completed entities or durable chunks immediately.
 - Catch provider failures per ticker/filing and continue, but re-raise programming errors in repository code.
 - A missed or late SEC filing heals on the next run, because the work list is the filing index minus the stored accessions; `-F` only re-reads stored history.
 
 The source grain, not the destination primary key alone, determines the correct frontier.
+
+### 13F work list and progress
+
+The [13F fetcher](../../src/data_extract/utils/institutionals/fetch_13f.py) reads the configured window's metadata from the shared cached SEC filing index, subtracts completed filings with vectorized DataFrame operations, then sorts the pending rows and creates `Filing` objects only for those rows. The extraction loop and `tqdm` receive only pending filings; a run with nothing pending creates no filing objects or progress bar. Logs report listed, already-complete and pending filing units separately, and the saved summary counts successful pending units.
+
+Completion comes from the existing `sec13f_hr` table through `resume.stored_accessions`: one table-wide `SELECT DISTINCT accession_number` filtered to `parse_status = 'complete'`. Filing dates and holdings payload columns are not read for that comparison. When the index lists an accession under several filers, one additional scoped read projects only `cik` and `accession_number` for those filers and preserves completion per filer. Complete empty books count as done; failed reads and `invalid` markers remain pending for the EDGAR walk. Original filings and amendments keep separate accession identities.
+
+Explicit full/recovery mode bypasses the completion subtraction inside the same filing bounds. Completion matching uses the existing table without an added database index or a separate tracking file. The narrow projection limits data returned to Python; PostgreSQL can still scan the table to find complete markers.
 
 ## Point-in-time rules
 

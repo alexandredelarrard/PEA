@@ -779,18 +779,41 @@ def test_short_flow_and_ftd_quantities_convert_through_the_saved_basis(sqlite_st
     )
 
 
-def test_a_ticker_without_any_basis_converts_at_the_configured_factor_and_warns(
-    sqlite_store: Any, tmp_path: Path, caplog: pytest.LogCaptureFixture
+def test_an_adr_with_unverified_units_flows_through_the_saved_basis_at_ratio_one(
+    sqlite_store: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    days = pd.bdate_range("2024-01-02", periods=60, name="date")
+    sqlite_store.replace(
+        Tables.cube_part_prices,
+        pd.DataFrame(
+            {
+                "date": days,
+                "ticker": "AAA",
+                "close_split": 100.0,
+                "close_total": 100.0,
+                "volume": 4_000.0,
+                "close_pit": 100.0,
+                "shares_outstanding_pit": 4_000.0,
+                "mcap_pit": 400_000.0,
+                "security_basis": 1.0,
+            }
+        ),
+    )
+    sqlite_store.save(Tables.universe_cusip, market_lines(["AAA"], days[0]))
+    sqlite_store.save(Tables.universe_cik_symbol, lineage_rows(["AAA"]))
+    sqlite_store.save(Tables.sec_short_volume_security, short_lines("AAA", days, 400.0, 4_000.0))
+    sqlite_store.save(Tables.sec_fails_to_deliver_security, ftd_lines([("2024-01-25", "000000001", "AAA", 400.0, "202401b")]))
     ctx = context(sqlite_store, tmp_path)
     step = StepCubeInstitutionals(ctx, ctx.config)
-    idx = pd.bdate_range("2024-01-02", periods=5)
-    df_factor = pd.DataFrame({"AAA": [1.0, 1.0, 2.0, 2.0, 2.0], "ADR": float("nan"), "NEW": [float("nan"), float("nan"), 1.0, 1.0, 1.0]}, index=idx)
-    with caplog.at_level(logging.WARNING):
-        filled = step._fill_unknown_units(df_factor)
-    assert filled["ADR"].eq(1.0).all()
-    assert filled["AAA"].equals(df_factor["AAA"])
-    assert filled["NEW"].isna().sum() == 2
-    assert df_factor["ADR"].isna().all()
-    assert any("ADR" in record.getMessage() for record in caplog.records)
-    print("SANITY: a ticker with no basis on any date gets factor 1.0 with a warning; a ticker with some basis keeps its own NaNs.")
+    monkeypatch.setattr(institutional_step, "load_peers_or_raise", lambda ctx: {})
+    monkeypatch.setattr(step, "_insider_panel", lambda *args: None)
+    monkeypatch.setattr(step, "_ownership_panel", lambda *args: None)
+    panel = institutional_panel(step).set_index(["date", "ticker"]).xs("AAA", level="ticker")
+    turnover = panel["f_ic_shortvol_turnover_20d"].loc[days[21] :]
+    ftd = panel.loc[pd.Timestamp("2024-02-21"), "f_ic_ftd_to_adv20"]
+    assert len(turnover) > 30 and turnover.to_numpy() == pytest.approx(2.0, rel=1e-6)
+    assert ftd == pytest.approx(0.1, rel=1e-6)
+    print(
+        f"SANITY: an ADR-category ticker (AAA here) whose saved security_basis is the identity 1.0 (unverified units) converts every FINRA and FTD quantity at ratio 1: "
+        f"turnover {turnover.min():.3f}..{turnover.max():.3f} over {len(turnover)} days, ftd_to_adv20 {ftd:.3f}, none NaN; no institutionals-side fallback exists."
+    )

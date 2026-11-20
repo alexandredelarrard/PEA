@@ -6,7 +6,7 @@ tags:
   - wiki
   - reference
   - configuration
-source_commit: 39c94c0dd62dcb4730a2bbc77f437f5a6fdabfcf
+source_commit: ea60c7d9612832515767f9b71338717e887b24b7
 integration_parents:
   - 1195d18d6dcd3e380cacc0e8cb4a6cd5f5392090
   - ad346fa6d7c31c57046942e966727edb8414916f
@@ -103,11 +103,13 @@ Key distinctions:
 
 [point_in_time](../../src/utils/publication.py) is the shared dataframe entry point. It uses exactly the source's `pit.column`, adds `pit.lag_days` calendar days, then rolls forward to the first actual market session. Prepare independently consumed dated sources before joining them and retain their original clocks. Invalid row dates are reported and excluded; a missing configured column is a contract error. Future availability never rolls backward.
 
+The macro policy sets `data.tables.prices_macro.pit.lag_days=2`. The shared beta/target loader locally uses zero added lag for SPY (`equity_tr`), gold and oil; every other consumed macro series follows the configured value. Both groups use the same `point_in_time` function. Raw macro dates/values, extraction and forward-fill remain unchanged. See [macro timing for betas and targets](./modelling-and-portfolio.md#macro-timing-for-betas-and-targets).
+
 Both notes tables use period end +12 calendar days; FTD uses half-month end +21; both 13F book families use filing date +2; calls use call date +3. Raw acceptance and capture timestamps remain evidence and do not override the declared clock. Cube and assembly dates add no lag.
 
 Each cube's `warmup` maps physical input tables to additional calendar days before its actual earliest rewrite date. Integers read from rewrite start minus that amount through the run ceiling. Zero retains the inclusive first write date; `null` reads full stored history without an artificial lower bound. Missing dependencies fail. Entity/column projections remain. Finite budgets cannot silently widen; insufficient budgets refuse the calculation, while naturally short stored history retains ordinary unavailable/minimum-observation behavior. Statistical windows stay in [data_aggregate.yml](../../configs/data_aggregate.yml).
 
-Institutional Schedule 13D/13G inputs explicitly use `null`: historical empty-filing markers classify submitters, so a finite cutoff can change current counts. Finite budgets are refused before either ownership payload read. FTD share-basis inputs also explicitly retain full split, action and fundamental-count evidence; their output rewrite remains 30 calendar days. Macro target inputs apply their configured publication lag before factor construction.
+Institutional Schedule 13D/13G inputs explicitly use `null`: historical empty-filing markers classify submitters, so a finite cutoff can change current counts. Finite budgets are refused before either ownership payload read. FTD share-basis inputs also explicitly retain full split, action and fundamental-count evidence; their output rewrite remains 30 calendar days. Macro beta/target inputs apply the selective publication rule above before factor construction.
 
 Operational freshness settings, `extraction-status`, source-age status checks and the prediction freshness guard are removed. Economic age rules, completeness, listing/security eligibility and denominator requirements remain. Listing grace of 10 market sessions and identity recheck of 7 calendar days are `data_extract.listing_end_grace_sessions` and `identity_change_recheck_days`; neither widens source bounds.
 
@@ -158,7 +160,7 @@ Important blocks:
 | `features` | Cross-sectional transform policy. |
 | `intrinsic` | Two-stage DCF parameters; terminal growth must remain below discount rate. |
 | `hist` | Five-year-style self-history comparison window and minimum observations. |
-| `sec_thirteen` | The consumed unknown-unit factor of the institutional flows; the `superinvestor` block (top-K 20, 90-day book age) is dead config awaiting cleanup (the 13F cube part reads `cluster.yml`). Publication policy is in `data.yml`. |
+| `sec_thirteen` | Only the `superinvestor` block (top-K 20, 90-day book age) is dead config awaiting cleanup (the 13F cube part reads `cluster.yml`). Publication policy is in `data.yml`. |
 | `fundamentals_features` | `earnings_scale_quarters` controls prior SUE scale (2–8). Eight lag slots, eight-quarter persistence and three-session response are fixed with their mathematical owners; changing them requires a feature-contract migration. |
 | `workforce` | `part_time_weight`: α of the workforce headcount proxy FT + α·PT (0.65; must lie in [0.5, 1]). See [workforce features](./modelling-and-portfolio.md#workforce-features). |
 

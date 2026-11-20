@@ -451,26 +451,6 @@
         "corroboration": "Dollar volume against BRK-B, the same issuer's other class: BRK-A / BRK-B median per year is 13-95x in 2008-2013 and 0.10-0.14x in 2014-2020 (`_out/q2e_summary.txt` of the entity-symbol-lineage run); a class 1,500x BRK-B's price cannot trade 13x its dollars. After the repair it reads 0.15-0.23 in 2010-2013 and 0.82-0.95 in 2008-2009, before BRK-B's 50:1 split and index entry made it the liquid line (`_out/q2m_brka_summary.txt`).",
         "approved": "user decision P30, 2026-10-05 (reports/validate/2026-10-02-entity-symbol-lineage, finding F-Q2e-1)"
       }
-    ],
-    "CTVA": [
-      {
-        "before": "2026-10-01",
-        "factor": 0.15003750937734434,
-        "expect_jump": 1.23,
-        "evidence": "Corteva distributed Vylor 1:1 on 2026-10-01 (no change in CTVA ordinary shares; Sharadar spinoff value 68.71). Yahoo files the distribution as a 6.665 split in its ledger (prices_splits) and restated the pre-event volume by it, so every CTVA bar before 2026-10-01 is 6.665x the shares actually traded; the quote is carried by the same factor (close_split 11.65 -> 12.57 against quoted 77.65 -> 12.57). The factor is 1/6.665: with G=1 the terminal-basis volume equals the volume traded.",
-        "corroboration": "FINRA total volume / Yahoo volume, monthly (sec_short_volume_security, prices): 0.052, 0.051, 0.042, 0.055, 0.055, 0.055 for 2026-04..09 against 0.365 and 0.289 for 2026-10 and 11 (x6.6 step on the event month, = 6.665). After the repair the pre-event ratio reads 0.34-0.37.",
-        "approved": "user request 2026-11-19 (HON/CTVA/PSKY price-basis check after the 2026-11-19 institutionals rebuild)"
-      }
-    ],
-    "HON": [
-      {
-        "before": "2026-06-29",
-        "factor": 0.5243838489774515,
-        "expect_jump": 1.29,
-        "evidence": "2026-06-29: Honeywell spun off Honeywell Aerospace (1 HONA per 2 HON) and effected a 1-for-2 reverse split of Honeywell Technologies (634 -> 317 million ordinary shares; Sharadar split 0.5 and spinoffdividend 221.01 on the date). Yahoo records only a 0.9535 factor (prices_splits) and restated pre-event volume by it, not by the reverse split. The factor is G/Yahoo = 0.5/0.9535: the volume of every bar before 2026-06-29 then reads in post-reverse-split shares, the unit of shares_outstanding_pit and the terminal-basis FINRA and FTD quantities. Quoted price and market cap need no repair: close_pit 232.2 x 633.65 million = 147.1 billion on 2026-06-26 and 227.8 x 316.8 million = 72.2 billion on 2026-06-29 (the market-cap drop is the spun Aerospace value).",
-        "corroboration": "FINRA total volume / Yahoo volume, monthly: 0.343, 0.368, 0.341 for 2026-03..05 against 0.369, 0.362, 0.314, 0.349 for 2026-07..10, flat across the event; FINRA is in the shares of its day, so a Yahoo series restated by the reverse split would have shown the ratio doubling after it. Web: https://www.honeywell.com/us/en/news/press-releases/2026/06/honeywell-technologies-launches-independent-pure-play-automation-company-following-honeywell-aerospace-spin-off",
-        "approved": "user request 2026-11-19 (HON/CTVA/PSKY price-basis check after the 2026-11-19 institutionals rebuild)"
-      }
     ]
   },
   "seam_reviewed": {

@@ -18,7 +18,7 @@ from src.data_aggregate.utils.fundamentals.inputs import FundamentalHistory
 from src.data_aggregate.utils.fundamentals.intrinsic import intrinsic_value_daily
 from src.data_aggregate.utils.price.frames import PriceFrames
 from src.data_store.schema import Tables
-from src.utils.price.adjustments import ShareBasis
+from src.utils.price.adjustments import ShareBasis, quantity_basis
 from src.utils.price.per_share import eps_price, ordinary_per_share_to_security, vendor_ordinary_per_share
 from src.utils.publication import point_in_time
 from tests.conftest import make_frames
@@ -266,13 +266,17 @@ def test_invalid_new_financial_eps_clears_the_prior_public_state() -> None:
     print("SANITY: an invalid newly public EPS ends the previous state instead of reviving an older estimate.")
 
 
-def test_archive_eps_daily_gate_rejects_unresolved_units_without_policy() -> None:
+def test_archive_eps_daily_gate_keeps_unverified_units_at_ratio_one() -> None:
     days = pd.bdate_range("2024-01-02", periods=2)
     df_close = pd.DataFrame({"AAA": 50.0}, index=days)
-    basis = replace(known_no_share_events(), unknown_units=frozenset({"AAA"}))
+    df_security = pd.DataFrame({"ticker": ["AAA"], "category": ["ADR Common Stock"]})
+    no_splits = pd.DataFrame(columns=["ticker", "date", "ratio"])
+    basis = quantity_basis(pd.DataFrame(columns=["ticker", "date", "action", "value"]), no_splits, {}, ["AAA"], df_security)
     df_price = eps_price(df_close, df_close * 0.0 + 2.0, basis)
-    assert df_price["AAA"].isna().all()
-    print("SANITY: unresolved quote units cannot bypass the archive EPS daily eligibility gate when no explicit policy exists.")
+    assert df_price["AAA"].eq(100.0).all()
+    print(
+        "SANITY: an ADR without a verified quote_units entry keeps the identity unit ratio 1, so the archive EPS pair is priced (50 x 2 = 100), not NaN."
+    )
 
 
 @pytest.mark.parametrize("field", ["diluted_shares_growth", "dps_growth"])

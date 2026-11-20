@@ -68,7 +68,7 @@ data:
         days: 7
       pit:
         column: date
-        lag_days: 0
+        lag_days: 2
 
     sec_fundamentals_history:
       start_date: '2009-04-15'
